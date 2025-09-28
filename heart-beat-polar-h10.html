@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Polar H10 → Accelerometer Data Logger (Web Bluetooth)</title>
+  <style>
+    :root {
+      --bg: #0f172a;       /* slate-900 */
+      --panel: #111827;    /* gray-900 */
+      --muted: #94a3b8;    /* slate-400 */
+      --text: #e5e7eb;     /* gray-200 */
+      --accent: #22d3ee;   /* cyan-400 */
+      --good: #34d399;     /* emerald-400 */
+      --fair: #f59e0b;     /* amber-500 */
+      --poor: #f87171;     /* red-400 */
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Noto Sans, "Apple Color Emoji", "Segoe UI Emoji";
+      background: radial-gradient(1200px 800px at 80% -10%, #1f2937 0, var(--bg) 40%);
+      color: var(--text);
+    }
+    .wrap { max-width: 980px; margin: 32px auto; padding: 0 16px; }
+    header { display:flex; align-items:center; gap:16px; margin-bottom: 16px; }
+    h1 { font-size: clamp(22px, 3vw, 32px); line-height: 1.1; margin: 0; }
+    .tag { padding: 4px 10px; border-radius: 999px; background: #0ea5e9; color:#002233; font-weight:700; font-size:12px; letter-spacing: .04em; }
+
+    .panel { background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(0,0,0,.15)); border: 1px solid rgba(255,255,255,.06); box-shadow: 0 10px 30px rgba(0,0,0,.35); border-radius: 16px; padding: 16px; }
+    .grid { display:grid; grid-template-columns: 1fr; gap: 16px; }
+    @media (min-width: 900px){ .grid{ grid-template-columns: 1.1fr .9fr; } }
+
+    .controls{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    button{ appearance:none; border:1px solid rgba(255,255,255,.15); background: #111827; color: var(--text); border-radius: 12px; padding: 10px 14px; font-weight: 600; cursor: pointer; transition: .2s; }
+    button:hover{ transform: translateY(-1px); border-color: rgba(34,211,238,.5); box-shadow: 0 8px 20px rgba(34,211,238,.15); }
+    button:disabled{ opacity:.5; cursor:not-allowed; box-shadow:none; transform:none; }
+    .status { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+
+    .statbox { display:flex; gap:20px; align-items: center; justify-content: space-between; }
+    .stat { background: #0b1220; border: 1px solid rgba(255,255,255,.06); border-radius: 14px; padding: 14px 16px; flex:1; }
+    .label { color: var(--muted); font-size: 12px; letter-spacing:.05em; text-transform: uppercase; }
+    .value { font-size: 32px; font-weight: 800; }
+    .value small{ font-size: 14px; font-weight: 600; color: var(--muted); }
+    .good { color: var(--good); }
+    .fair { color: var(--fair); }
+    .poor { color: var(--poor); }
+
+    canvas { width: 100%; height: 220px; background: #0b1220; border:1px solid rgba(255,255,255,.06); border-radius: 12px; }
+    footer { margin-top: 24px; color: var(--muted); font-size: 12px; }
+    a { color: var(--accent); }
+    .row { display:flex; gap:12px; align-items:center; }
+    .row > * { flex: 1; }
+    .tiny { font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="tag">Web Bluetooth</div>
+    <h1>Polar H10 → Accelerometer Data Logger</h1>
+  </header>
+
+  <div class="panel">
+    <div class="controls">
+      <button id="connectBtn">🔗 Connect H10</button>
+      <button id="disconnectBtn" disabled>🔌 Disconnect H10</button>
+      <button id="saveAccBtn">💾 Save Accelerometer Data (CSV)</button>
+      <button id="debugBtn">🐛 Debug Info</button>
+      <button id="retryBtn" disabled>🔄 Retry Activation</button>
+      <div class="status" id="status">Idle</div>
+    </div>
+
+
+    <div class="statbox" style="margin-top:12px">
+      <div class="stat">
+        <div class="label">Acceleration</div>
+        <div class="value" id="accVal">— <small>g</small></div>
+      </div>
+    </div>
+
+    <div class="grid" style="margin-top: 8px">
+      <div>
+        <div class="label">Accelerometry (X axis)</div>
+        <canvas id="accxCanvas" width="640" height="220"></canvas>
+      </div>
+      <div>
+        <div class="label">Accelerometry (Y axis)</div>
+        <canvas id="accyCanvas" width="640" height="220"></canvas>
+      </div>
+      <div>
+        <div class="label">Accelerometry (Z axis)</div>
+        <canvas id="acczCanvas" width="640" height="220"></canvas>
+      </div>
+      <div>
+        <div class="label">Accelerometry (magnitude)</div>
+        <canvas id="accmCanvas" width="640" height="220"></canvas>
+      </div>
+    </div>
+
+    <div class="statbox" style="margin-top:12px">
+      <div class="stat">
+        <div class="label">Data Points</div>
+        <div class="value" id="dataCountVal">0 <small>samples</small></div>
+      </div>
+      <div class="stat">
+        <div class="label">Collection Time</div>
+        <div class="value" id="collectionTimeVal">0 <small>minutes</small></div>
+      </div>
+      <div class="stat">
+        <div class="label">Data Rate</div>
+        <div class="value" id="dataRateVal">0 <small>Hz</small></div>
+      </div>
+    </div>
+
+    <footer>
+      <p>Notes: Use <strong>Chrome</strong> or another browser that supports Web Bluetooth in a <strong>secure context</strong> (HTTPS or <code>http://localhost</code>). Wear and moisten the strap so it transmits. Data is collected for up to 10 hours and can be exported as CSV.</p>
+    </footer>
+  </div>
+</div>
+
+<script>
+// ================== Config ==================
+const HR_SERVICE_UUID = 0x180D;
+const HR_MEAS_UUID    = 0x2A37;
+
+const PMD_SERVICE_UUID = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
+const PMD_CHAR1_UUID = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8';
+const PMD_CHAR2_UUID = 'fb005c82-02e7-f387-1cad-8acd2d8df0c8';
+
+const ECG_WRITE = new Uint8Array([
+  0x02, 0x00, 0x00, 0x01,
+  0x82, 0x00, 0x01, 0x01,
+  0x0E, 0x00
+]);
+
+const ACC_WRITE = new Uint8Array([
+  0x02, 0x02, 0x00, 0x01,
+  0xC8, 0x00, 0x01, 0x01,
+  0x10, 0x00, 0x02, 0x01,
+  0x08, 0x00
+]);
+
+let WINDOW_SEC = 36000;   // 10 hours in seconds
+let FS = 20.0;            // Hz for even sampling
+
+// ================== State ==================
+let device = null;
+let server = null;
+let dataChar = null;
+let accBuffer = []; // [{t: epochSeconds, x: g, y: g, z: g}]
+let startTime = null;
+let lastDataCount = 0;
+let lastDataTime = 0;
+let rawDataCount = 0;
+
+let updateTimer = null;
+let uiTimer = null;
+
+// ================== UI Elements ==================
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const saveAccBtn = document.getElementById('saveAccBtn');
+const debugBtn = document.getElementById('debugBtn');
+const retryBtn = document.getElementById('retryBtn');
+const statusEl = document.getElementById('status');
+
+const accVal = document.getElementById('accVal');
+const dataCountVal = document.getElementById('dataCountVal');
+const collectionTimeVal = document.getElementById('collectionTimeVal');
+const dataRateVal = document.getElementById('dataRateVal');
+
+// Canvas
+const accxCanvas = document.getElementById('accxCanvas');
+const accyCanvas = document.getElementById('accyCanvas');
+const acczCanvas = document.getElementById('acczCanvas');
+const accmCanvas = document.getElementById('accmCanvas');
+
+// Canvas context
+const accxctx = accxCanvas.getContext('2d');
+const accyctx = accyCanvas.getContext('2d');
+const acczctx = acczCanvas.getContext('2d');
+const accmctx = accmCanvas.getContext('2d');
+
+// ================== Helpers ==================
+function setStatus(msg){ statusEl.textContent = msg; }
+
+
+
+function parseAcc(dataView){
+  // Polar ACC format: frametype + timestamp (8 bytes) + accuracy + samples
+  // Each sample: 6 bytes (X, Y, Z as 16-bit signed integers)
+  const samples = [];
+
+  console.log('parseAcc: Raw data length:', dataView.byteLength);
+  console.log('parseAcc: Raw data bytes:', Array.from(new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength)));
+  
+  // Check if we have enough data
+  if (dataView.byteLength < 10) {
+    console.log('parseAcc: Not enough data, length:', dataView.byteLength);
+  return samples;
+}
+
+  // Check accuracy byte (should be 0x01 for 16-bit)
+  const accuracy = dataView.getUint8(9);
+  console.log('parseAcc: Accuracy byte:', accuracy, 'Expected: 0x01');
+  
+  // Try different parsing approaches based on accuracy byte
+  let sampleSize = 6; // Default for 16-bit samples
+  let offset = 10; // Default offset after timestamp + accuracy
+  
+  if (accuracy === 0x00) {
+    // 8-bit samples
+    sampleSize = 3;
+    offset = 10;
+    console.log('parseAcc: Using 8-bit sample format');
+  } else if (accuracy === 0x01) {
+    // 16-bit samples
+    sampleSize = 6;
+    offset = 10;
+    console.log('parseAcc: Using 16-bit sample format');
+    } else {
+    console.log('parseAcc: Unknown accuracy byte, trying 16-bit format');
+  }
+
+  for (let i = offset; i + sampleSize - 1 < dataView.byteLength; i += sampleSize){
+    let x, y, z;
+    
+    if (sampleSize === 3) {
+      // 8-bit samples
+      x = dataView.getInt8(i) / 1000.0;
+      y = dataView.getInt8(i + 1) / 1000.0;
+      z = dataView.getInt8(i + 2) / 1000.0;
+    } else {
+      // 16-bit samples
+      x = dataView.getInt16(i, true) / 1000.0;
+      y = dataView.getInt16(i + 2, true) / 1000.0;
+      z = dataView.getInt16(i + 4, true) / 1000.0;
+    }
+    
+    const m = Math.sqrt(x*x + y*y + z*z);
+    samples.push({ x, y, z, m });
+  }
+  
+  console.log('parseAcc: Parsed', samples.length, 'samples');
+  if (samples.length > 0) {
+    console.log('parseAcc: First sample:', samples[0]);
+  }
+  return samples;
+}
+
+function parsePMD(dataView){
+  if (dataView.byteLength < 9) {
+    console.log('parsePMD: Not enough data, length:', dataView.byteLength);
+    return null;
+  }
+
+  const frametype = dataView.getUint8(0);
+  const timestamp = dataView.getBigUint64(1, true);
+  
+  console.log('parsePMD: Frame type:', frametype, 'Length:', dataView.byteLength);
+  console.log('parsePMD: Raw data:', Array.from(new Uint8Array(dataView.buffer, dataView.byteOffset, Math.min(20, dataView.byteLength))));
+  
+  if (frametype == 0x02){
+    console.log('parsePMD: Processing accelerometer data');
+    const accSamples = parseAcc(dataView);
+    return {timestamp, accSamples};
+  }
+  else if (frametype == 0x00) {
+    // Sometimes accelerometer data comes as frame type 0x00
+    console.log('parsePMD: Trying to parse as accelerometer data (frame type 0x00)');
+    const accSamples = parseAcc(dataView);
+    if (accSamples.length > 0) {
+      return {timestamp, accSamples};
+    }
+  }
+  else {
+    console.log('parsePMD: Ignoring frame type:', frametype);
+    return null; // Only process accelerometer data
+  }
+}
+
+
+function keepWindow(){
+  while (accBuffer.length && accBuffer[0].t < accBuffer[accBuffer.length-1].t - WINDOW_SEC){ accBuffer.shift(); }
+}
+
+function saveAccelerometerData(){
+  if (!accBuffer || accBuffer.length === 0){
+    alert('No accelerometer data to save');
+    return;
+  }
+
+  // Create CSV content
+  let csvContent = 'timestamp,x,y,z,magnitude\n';
+  accBuffer.forEach(sample => {
+    csvContent += `${sample.t},${sample.x},${sample.y},${sample.z},${sample.m}\n`;
+  });
+
+  // Create blob and download
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `accelerometer_data_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  setStatus(`Saved ${accBuffer.length} accelerometer samples to CSV file`);
+}
+
+function showDebugInfo(){
+  console.log('=== DEBUG INFO ===');
+  console.log('Device connected:', !!device);
+  console.log('Server connected:', !!server);
+  console.log('Data characteristic:', !!dataChar);
+  console.log('Raw data frames received:', rawDataCount);
+  console.log('Accelerometer buffer length:', accBuffer.length);
+  console.log('Start time:', startTime);
+  console.log('Current time:', Date.now() / 1000);
+  console.log('Window size (seconds):', WINDOW_SEC);
+  
+  if (accBuffer.length > 0) {
+    console.log('Latest sample:', accBuffer[accBuffer.length - 1]);
+    console.log('Sample range:', {
+      first: accBuffer[0],
+      last: accBuffer[accBuffer.length - 1]
+    });
+  }
+  
+  // Check if we're receiving any data at all
+  if (dataChar) {
+    console.log('Data characteristic properties:', {
+      uuid: dataChar.uuid,
+      properties: dataChar.properties
+    });
+  }
+  
+  alert(`Debug info logged to console. Check browser console (F12) for details.\n\nRaw data frames: ${rawDataCount}\nAccelerometer samples: ${accBuffer.length}\nDevice connected: ${!!device}\nData char: ${!!dataChar}`);
+}
+
+async function retryActivation(){
+  if (!device || !server) {
+    alert('Not connected to device');
+    return;
+  }
+  
+  setStatus('Retrying activation methods...');
+  console.log('Manual retry activation triggered');
+  
+  try {
+    const pmdSvc = await server.getPrimaryService(PMD_SERVICE_UUID);
+    const ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
+    
+    // Reset data count
+    rawDataCount = 0;
+    
+    // Try different activation methods
+    console.log('Method 1: Original ACC command');
+    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    console.log('Method 2: Alternative ACC command');
+    const altCommand = new Uint8Array([0x02, 0x02, 0x00, 0x01, 0xC8, 0x00, 0x01, 0x01, 0x10, 0x00]);
+    await ctrlChar.writeValueWithoutResponse(altCommand);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    console.log('Method 3: Combined ECG+ACC command');
+    const combinedCommand = new Uint8Array([0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00, 0x02, 0x02, 0x00, 0x01, 0xC8, 0x00, 0x01, 0x01, 0x10, 0x00, 0x02, 0x01, 0x08, 0x00]);
+    await ctrlChar.writeValueWithoutResponse(combinedCommand);
+    
+    setStatus('Retry complete. Check console for results...');
+    
+    // Check results after 3 seconds
+    setTimeout(() => {
+      if (rawDataCount > 0) {
+        setStatus(`Success! Received ${rawDataCount} data frames`);
+      } else {
+        setStatus('Retry failed. Try moving the device or reconnecting.');
+      }
+    }, 3000);
+    
+  } catch (err) {
+    console.error('Retry failed:', err);
+    setStatus('Retry failed: ' + err.message);
+  }
+}
+
+function drawSeries(ctx, data, opts={}){
+  const w = ctx.canvas.width, h = ctx.canvas.height;
+  ctx.clearRect(0,0,w,h);
+  ctx.save();
+  ctx.translate(60,10); // margins
+  const iw = w - 70, ih = h - 50;
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 1;
+  // Y grid lines
+  for (let i=0;i<5;i++){
+    const y = 10 + i*(ih/4);
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(iw,y); ctx.stroke();
+  }
+  // X grid lines
+  for (let i=0;i<5;i++){
+    const x = i*(iw/4);
+    ctx.beginPath(); ctx.moveTo(x,10); ctx.lineTo(x,ih+10); ctx.stroke();
+  }
+  if (!data || data.x.length<2){ ctx.restore(); return; }
+  const x = data.x, y = data.y;
+  const xmin = Math.min(...x), xmax = Math.max(...x);
+  const ymin = Math.min(...y), ymax = Math.max(...y);
+  const sx = v => (v - xmin) / (xmax - xmin + 1e-9) * iw;
+  const sy = v => ih - (v - ymin) / (ymax - ymin + 1e-9) * ih;
+  // axis tick labels
+  const fmt = (val, range)=>{
+    const r = Math.abs(range);
+    if (!isFinite(r) || r < 1e-9) return val.toFixed(3);
+    if (r < 0.5) return val.toFixed(3);
+    if (r < 5) return val.toFixed(2);
+    if (r < 50) return val.toFixed(1);
+    return Math.round(val).toString();
+  };
+  ctx.fillStyle = 'rgba(148,163,184,0.95)';
+  ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  // Y labels at grid lines
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let i=0;i<5;i++){
+    const gy = 10 + i*(ih/4);
+    const yval = ymax - (i/4)*(ymax - ymin);
+    ctx.fillText(fmt(yval, ymax - ymin), -6, gy);
+  }
+  // X labels at grid lines
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let i=0;i<5;i++){
+    const gx = i*(iw/4);
+    const xval = xmin + (i/4)*(xmax - xmin);
+    ctx.fillText(fmt(xval, xmax - xmin), gx, ih + 20);
+  }
+  ctx.strokeStyle = 'rgba(34,211,238,0.9)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(sx(x[0]), sy(y[0]));
+  for (let i=1;i<x.length;i++) ctx.lineTo(sx(x[i]), sy(y[i]));
+  ctx.stroke();
+  ctx.restore();
+}
+
+function updateUI(){
+  // Accelerometry
+  if (accBuffer.length > 0){
+    const latest = accBuffer[accBuffer.length - 1];
+    accVal.innerHTML = latest.m.toFixed(2) + ' <small>g</small>';
+  } else {
+    accVal.innerHTML = '— <small>g</small>';
+  }
+
+  // Data count
+  dataCountVal.innerHTML = accBuffer.length + ' <small>samples</small>';
+
+  // Collection time
+  if (startTime) {
+    const elapsed = (Date.now() / 1000) - startTime;
+    const minutes = Math.floor(elapsed / 60);
+    collectionTimeVal.innerHTML = minutes + ' <small>minutes</small>';
+  } else {
+    collectionTimeVal.innerHTML = '0 <small>minutes</small>';
+  }
+
+  // Data rate calculation
+  const currentTime = Date.now() / 1000;
+  if (lastDataTime > 0 && currentTime > lastDataTime) {
+    const timeDiff = currentTime - lastDataTime;
+    const dataDiff = accBuffer.length - lastDataCount;
+    const dataRate = dataDiff / timeDiff;
+    dataRateVal.innerHTML = dataRate.toFixed(1) + ' <small>Hz</small>';
+  } else {
+    dataRateVal.innerHTML = '0.0 <small>Hz</small>';
+  }
+  
+  // Update tracking variables
+  lastDataCount = accBuffer.length;
+  lastDataTime = currentTime;
+
+  // Accelerometry plot
+  if (accBuffer.length >= 2){
+    const t = accBuffer.map(p => p.t);
+    const x = accBuffer.map(p => p.x);
+    const y = accBuffer.map(p => p.y);
+    const z = accBuffer.map(p => p.z);
+    const m = accBuffer.map(p => p.m);
+    drawSeries(accxctx, { x:t, y:x });
+    drawSeries(accyctx, { x:t, y:y });
+    drawSeries(acczctx, { x:t, y:z });
+    drawSeries(accmctx, { x:t, y:m });
+  } else {
+    drawSeries(accxctx, {x:[], y:[]});
+    drawSeries(accyctx, {x:[], y:[]});
+    drawSeries(acczctx, {x:[], y:[]});
+    drawSeries(accmctx, {x:[], y:[]});
+  }
+}
+
+
+// ================== BLE Flow ==================
+async function connect(){
+  try{
+    setStatus('Requesting device…');
+    
+    // Enhanced device request for better macOS compatibility
+    device = await navigator.bluetooth.requestDevice({
+      filters: [
+        { name: 'Polar H10' },
+        { namePrefix: 'Polar' }
+      ],
+      optionalServices: [HR_SERVICE_UUID, PMD_SERVICE_UUID],
+      acceptAllDevices: false
+    });
+
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    setStatus('Connecting…');
+    
+    // Add timeout for connection
+    const connectPromise = device.gatt.connect();
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Connection timeout')), 10000)
+    );
+    
+    server = await Promise.race([connectPromise, timeoutPromise]);
+
+    setStatus('Getting services…');
+    
+    // Try to get device info first (sometimes helps with initialization)
+    try {
+      const deviceInfoSvc = await server.getPrimaryService('0000180a-0000-1000-8000-00805f9b34fb');
+      console.log('Device info service found');
+    } catch (e) {
+      console.log('Device info service not available, continuing...');
+    }
+
+    const pmdSvc = await server.getPrimaryService(PMD_SERVICE_UUID);
+    const ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
+    
+    setStatus('Starting accelerometer data stream…');
+    
+    // Try to wake up the device by requesting heart rate first (macOS workaround)
+    try {
+    const hrSvc = await server.getPrimaryService(HR_SERVICE_UUID);
+      const hrChar = await hrSvc.getCharacteristic(HR_MEAS_UUID);
+      console.log('Heart rate service found, device should be active');
+      
+      // Try to start heart rate notifications to fully activate the device
+      try {
+    await hrChar.startNotifications();
+        console.log('Heart rate notifications started to activate device');
+        // Stop them immediately since we only want accelerometer data
+        setTimeout(() => {
+          try {
+            hrChar.stopNotifications();
+            console.log('Heart rate notifications stopped');
+          } catch (e) {}
+        }, 1000);
+      } catch (e) {
+        console.log('Could not start heart rate notifications:', e);
+      }
+    } catch (e) {
+      console.log('Heart rate service not available, continuing with accelerometer only');
+    }
+    
+    // Only request accelerometer data - try multiple times for macOS
+    console.log('Writing ACC_WRITE command:', Array.from(ACC_WRITE));
+    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
+    
+    // Wait a bit and try again (macOS sometimes needs multiple attempts)
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    console.log('Retrying ACC_WRITE command...');
+    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
+    
+    // Wait a bit for the device to start streaming
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    dataChar = await pmdSvc.getCharacteristic(PMD_CHAR2_UUID);
+    console.log('Starting notifications on data characteristic');
+    
+    // Add event listener BEFORE starting notifications (important for macOS)
+    dataChar.addEventListener('characteristicvaluechanged', onPMD);
+    await dataChar.startNotifications();
+    
+    // Wait a bit more for notifications to start
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    console.log('Notifications started, waiting for data...');
+    
+    // Also try to read the characteristic to see if it's working
+    try {
+      const initialValue = await dataChar.readValue();
+      console.log('Initial data characteristic value:', Array.from(initialValue));
+    } catch (e) {
+      console.log('Could not read initial value:', e);
+    }
+
+    setStatus('Connected. Streaming accelerometer data…');
+    connectBtn.disabled = true;
+    disconnectBtn.disabled = false;
+    retryBtn.disabled = false;
+    startTime = Date.now() / 1000;
+
+    // Start processing timers
+    if (updateTimer) clearInterval(updateTimer);
+    if (uiTimer) clearInterval(uiTimer);
+    updateTimer = setInterval(processStep, 1000);
+    uiTimer = setInterval(()=>{
+      updateUI();
+    }, 100);
+    
+    // Check if we're receiving data after 5 seconds
+    setTimeout(() => {
+      if (rawDataCount === 0) {
+        console.log('WARNING: No data received after 5 seconds. Raw data count:', rawDataCount);
+        setStatus('Connected but no data received. Trying alternative activation...');
+        
+        // Try alternative activation methods
+        console.log('Attempting alternative activation methods...');
+        
+        // Method 1: Try different command format
+        const altCommand = new Uint8Array([0x02, 0x02, 0x00, 0x01, 0xC8, 0x00, 0x01, 0x01, 0x10, 0x00]);
+        console.log('Trying alternative command:', Array.from(altCommand));
+        ctrlChar.writeValueWithoutResponse(altCommand).catch(e => console.log('Alt command failed:', e));
+        
+        // Method 2: Try enabling both ECG and ACC
+        setTimeout(() => {
+          console.log('Trying combined ECG+ACC command...');
+          const combinedCommand = new Uint8Array([0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00, 0x02, 0x02, 0x00, 0x01, 0xC8, 0x00, 0x01, 0x01, 0x10, 0x00, 0x02, 0x01, 0x08, 0x00]);
+          ctrlChar.writeValueWithoutResponse(combinedCommand).catch(e => console.log('Combined command failed:', e));
+        }, 1000);
+        
+        // Method 3: Try original command again
+        setTimeout(() => {
+          console.log('Final retry with original command...');
+          ctrlChar.writeValueWithoutResponse(ACC_WRITE).catch(e => console.log('Final retry failed:', e));
+        }, 2000);
+        
+        // Method 4: Try restarting notifications (macOS workaround)
+        setTimeout(() => {
+          console.log('Restarting notifications as macOS workaround...');
+          if (dataChar) {
+            dataChar.stopNotifications().then(() => {
+              console.log('Notifications stopped, restarting...');
+              return dataChar.startNotifications();
+            }).then(() => {
+              console.log('Notifications restarted');
+            }).catch(e => console.log('Notification restart failed:', e));
+          }
+        }, 3000);
+        
+        // Method 5: Try a different approach - enable all sensors
+        setTimeout(() => {
+          console.log('Trying enable all sensors approach...');
+          const enableAllCommand = new Uint8Array([0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00, 0x02, 0x02, 0x00, 0x01, 0xC8, 0x00, 0x01, 0x01, 0x10, 0x00, 0x02, 0x01, 0x08, 0x00, 0x02, 0x03, 0x00, 0x01, 0x64, 0x00, 0x01, 0x01, 0x0A, 0x00]);
+          ctrlChar.writeValueWithoutResponse(enableAllCommand).catch(e => console.log('Enable all failed:', e));
+        }, 4000);
+        
+        // Final check after all methods
+        setTimeout(() => {
+          if (rawDataCount === 0) {
+            console.log('=== DIAGNOSTIC INFO ===');
+            console.log('All activation methods tried but no data received.');
+            console.log('This is a known issue with Polar H10 on macOS.');
+            console.log('Possible solutions:');
+            console.log('1. Try a different browser (Safari, Firefox)');
+            console.log('2. Use the Polar H10 with a different app first');
+            console.log('3. Reset the Polar H10 device');
+            console.log('4. Try on a different computer');
+            console.log('5. Check if the device firmware supports accelerometer streaming');
+            setStatus('All methods tried. This may be a macOS/Polar H10 compatibility issue.');
+          }
+        }, 8000);
+        
+      } else {
+        console.log('Data reception confirmed. Raw data count:', rawDataCount);
+      }
+    }, 5000);
+
+  } catch(err){
+    console.error(err);
+    if (err.name === 'NotFoundError') {
+      setStatus('Error: No Polar H10 device found. Make sure it\'s paired and nearby.');
+    } else if (err.name === 'SecurityError') {
+      setStatus('Error: Bluetooth access denied. Please allow access and try again.');
+    } else if (err.message === 'Connection timeout') {
+      setStatus('Error: Connection timeout. Make sure the device is nearby and try again.');
+    } else {
+    setStatus('Error: ' + err.message);
+    }
+  }
+}
+
+function onDisconnected(){
+  setStatus('Disconnected');
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = true;
+  retryBtn.disabled = true;
+  if (dataChar){ try{ dataChar.stopNotifications(); } catch(e){} }
+  if (updateTimer) clearInterval(updateTimer);
+  if (uiTimer) clearInterval(uiTimer);
+}
+
+async function disconnect(){
+  try{
+    if (!device) return;
+    if (dataChar){ try{ await dataChar.stopNotifications(); } catch(e){} }
+    if (device.gatt.connected) device.gatt.disconnect();
+  } catch(err){ console.error(err); }
+}
+
+function onPMD(event){
+  const dv = event.target.value;
+  rawDataCount++;
+  console.log('onPMD: Received data #' + rawDataCount + ', length:', dv.byteLength);
+  
+  const data = parsePMD(dv);
+  if (!data) {
+    console.log('onPMD: No data parsed from frame #' + rawDataCount);
+    return;
+  }
+
+  console.log('onPMD: Processing', data.accSamples.length, 'accelerometer samples from frame #' + rawDataCount);
+
+  const tNow = Number(data.timestamp) / 1000000000.0;
+
+  // Add accSamples with estimated timestamps
+  for (let i = 0; i < data.accSamples.length; i++){
+    const sample = data.accSamples[i];
+    const t = tNow - (data.accSamples.length - i - 1) / 200.0; // Polar H10 Acc @ 200Hz
+    accBuffer.push({ t, x: sample.x, y: sample.y, z: sample.z, m: sample.m });
+  }
+  
+  console.log('onPMD: Total samples in buffer:', accBuffer.length);
+}
+
+function processStep(){
+  keepWindow();
+}
+
+// ================== Events ==================
+connectBtn.addEventListener('click', connectWithRetry);
+disconnectBtn.addEventListener('click', disconnect);
+saveAccBtn.addEventListener('click', saveAccelerometerData);
+debugBtn.addEventListener('click', showDebugInfo);
+retryBtn.addEventListener('click', retryActivation);
+
+// Feature detection and macOS compatibility
+if (!('bluetooth' in navigator)){
+  setStatus('Web Bluetooth not available in this browser. Try Chrome or Edge.');
+  connectBtn.disabled = true;
+} else {
+  // Check if we're on macOS and provide specific guidance
+  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  if (isMac) {
+    setStatus('Ready. On macOS, make sure Bluetooth is enabled and Polar H10 is paired.');
+  } else {
+    setStatus('Ready. Make sure Bluetooth is enabled and Polar H10 is nearby.');
+  }
+}
+
+// Add connection retry logic for macOS
+let connectionRetries = 0;
+const maxRetries = 3;
+
+async function connectWithRetry() {
+  try {
+    await connect();
+    connectionRetries = 0; // Reset on successful connection
+  } catch (err) {
+    connectionRetries++;
+    if (connectionRetries < maxRetries) {
+      setStatus(`Connection failed. Retrying... (${connectionRetries}/${maxRetries})`);
+      setTimeout(() => connectWithRetry(), 2000);
+    } else {
+      setStatus('Connection failed after multiple attempts. Please check device and try again.');
+      connectionRetries = 0;
+    }
+  }
+}
+</script>
+</body>
+</html>
