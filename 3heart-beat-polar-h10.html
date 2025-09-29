@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Polar H10 → Accelerometer Data Logger (Web Bluetooth) + 3D Motion</title>
+  <title>Polar H10 → Accelerometer Logger + 3D Motion</title>
   <style>
     :root {
       --bg: #0f172a;       /* slate-900 */
@@ -42,9 +42,6 @@
     .label { color: var(--muted); font-size: 12px; letter-spacing:.05em; text-transform: uppercase; }
     .value { font-size: 32px; font-weight: 800; }
     .value small{ font-size: 14px; font-weight: 600; color: var(--muted); }
-    .good { color: var(--good); }
-    .fair { color: var(--fair); }
-    .poor { color: var(--poor); }
 
     canvas.chart { width: 100%; height: 220px; background: #0b1220; border:1px solid rgba(255,255,255,.06); border-radius: 12px; }
 
@@ -66,14 +63,14 @@
 <div class="wrap">
   <header>
     <div class="tag">Web Bluetooth</div>
-    <h1>Polar H10 → Accelerometer Data Logger + 3D Motion</h1>
+    <h1>Polar H10 → Accelerometer Logger + 3D Motion</h1>
   </header>
 
   <div class="panel">
     <div class="controls">
       <button id="connectBtn">🔗 Connect H10</button>
       <button id="disconnectBtn" disabled>🔌 Disconnect H10</button>
-      <button id="saveAccBtn">💾 Save Accelerometer Data (CSV)</button>
+      <button id="saveAccBtn">💾 Save ACC CSV</button>
       <button id="debugBtn">🐛 Debug Info</button>
       <button id="retryBtn" disabled>🔄 Retry Activation</button>
       <button id="resetMotionBtn" disabled>🎯 Reset Motion Start</button>
@@ -124,7 +121,7 @@
           </div>
         </div>
         <div class="tiny" style="color:var(--muted); margin-top:6px;">
-          Motion is estimated by subtracting a 1-second baseline (gravity/bias) after you click <em>Reset Motion Start</em> (also auto-runs on connect), then integrating acceleration to velocity/position. Expect drift over time.
+          Motion is estimated by subtracting a ~1s gravity/bias baseline (on reset/connect), then integrating acceleration. Expect drift over time.
         </div>
       </div>
     </div>
@@ -145,87 +142,86 @@
     </div>
 
     <footer>
-      <p>Notes: Use <strong>Chrome</strong> or another browser that supports Web Bluetooth in a <strong>secure context</strong> (HTTPS or <code>http://localhost</code>). Wear and moisten the strap so it transmits. Data is collected for up to 10 hours and can be exported as CSV.</p>
+      <p>Notes: Use <strong>Chrome</strong> (or Edge) in a <strong>secure context</strong> (HTTPS or <code>http://localhost</code>). Ensure strap contact; close Polar Beat/Flow so they don’t “steal” the H10.</p>
     </footer>
   </div>
 </div>
 
-<!-- Three.js (classic builds attach to window.THREE) -->
+<!-- Three.js -->
 <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
 <script src="https://unpkg.com/three@0.158.0/examples/js/controls/OrbitControls.js"></script>
 
 <script>
-// ================== Config ==================
+// ================== Config & UUIDs ==================
 const HR_SERVICE_UUID = 0x180D;
 const HR_MEAS_UUID    = 0x2A37;
 
+// ✅ Correct Polar PMD UUIDs
 const PMD_SERVICE_UUID = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
-const PMD_CHAR1_UUID = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8';
-const PMD_CHAR2_UUID = 'fb005c82-02e7-f387-1cad-8acd-2d8df0c8'.replace('2d8d','2d8d'); // keep uuid as given above
+const PMD_CHAR1_UUID   = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8'; // control
+const PMD_CHAR2_UUID   = 'fb005c82-02e7-f387-1cad-8acd2d8df0c8'; // data
 
-const ECG_WRITE = new Uint8Array([
-  0x02, 0x00, 0x00, 0x01,
-  0x82, 0x00, 0x01, 0x01,
-  0x0E, 0x00
-]);
+// Polar sample commands
+const ECG_WRITE = new Uint8Array([0x02,0x00,0x00,0x01, 0x82,0x00,0x01,0x01, 0x0E,0x00]);
+const ACC_WRITE = new Uint8Array([0x02,0x02,0x00,0x01, 0xC8,0x00,0x01,0x01, 0x10,0x00, 0x02,0x01,0x08,0x00]); // 200Hz, ±8g (typ)
 
-const ACC_WRITE = new Uint8Array([
-  0x02, 0x02, 0x00, 0x01,
-  0xC8, 0x00, 0x01, 0x01,
-  0x10, 0x00, 0x02, 0x01,
-  0x08, 0x00
-]);
+// General
+let WINDOW_SEC = 36000;           // 10h ring buffer
+const G = 9.80665;                // m/s² per 1 g
+const TARGET_FS = 200;            // assumed rate
+const CONNECT_TIMEOUT_MS = 20000; // longer timeout
 
-let WINDOW_SEC = 36000;   // 10 hours in seconds
-const G = 9.80665;        // m/s^2 per 1g
-const TARGET_FS = 200;    // H10 accelerometer sample rate (assumed)
 // ================== State ==================
-let device = null, server = null, dataChar = null;
-let accBuffer = []; // [{t, x, y, z, m}]
-let startTime = null;
-let lastDataCount = 0, lastDataTime = 0, rawDataCount = 0;
-let updateTimer = null, uiTimer = null;
+let device=null, server=null, dataChar=null;
+let accBuffer=[]; // [{t,x,y,z,m}]
+let startTime=null, lastDataCount=0, lastDataTime=0, rawDataCount=0;
+let updateTimer=null, uiTimer=null;
 
-// --- Motion + Baseline ---
+// Motion baseline/integration
 const BASELINE_SEC = 1.0;
 const BASELINE_COUNT = Math.round(BASELINE_SEC * TARGET_FS);
-let baselineCollecting = false, baselineReady = false;
-let baselineSamples = [];
-let baselineAcc = {x:0,y:0,z:0}; // in g
-let vel = {x:0,y:0,z:0};         // m/s
-let pos = {x:0,y:0,z:0};         // meters (integrated)
-let lastSampleTime = null;
-const VEL_DAMP_PER_SAMPLE = 0.985; // small damping
-let motionPath = [];               // raw integrated in meters [{x,y,z}]
+let baselineCollecting=false, baselineReady=false, baselineSamples=[];
+let baselineAcc={x:0,y:0,z:0};  // g
+let vel={x:0,y:0,z:0};          // m/s
+let pos={x:0,y:0,z:0};          // m
+let lastSampleTime=null;
+const VEL_DAMP_PER_SAMPLE = 0.985; // drift taming
 
-// --- Visualization reference offset (central point) ---
-let originOffset = {x:0,y:0,z:0};  // displayedPoint = pos - originOffset
+// Central reference (visual)
+let originOffset={x:0,y:0,z:0};
 
 // ================== UI Elements ==================
-const connectBtn = document.getElementById('connectBtn');
-const disconnectBtn = document.getElementById('disconnectBtn');
-const saveAccBtn = document.getElementById('saveAccBtn');
-const debugBtn = document.getElementById('debugBtn');
-const retryBtn = document.getElementById('retryBtn');
-const resetMotionBtn = document.getElementById('resetMotionBtn');
-const recenterBtn = document.getElementById('recenterBtn');
-const statusEl = document.getElementById('status');
+const $ = sel => document.querySelector(sel);
+const connectBtn = $('#connectBtn');
+const disconnectBtn = $('#disconnectBtn');
+const saveAccBtn = $('#saveAccBtn');
+const debugBtn = $('#debugBtn');
+const retryBtn = $('#retryBtn');
+const resetMotionBtn = $('#resetMotionBtn');
+const recenterBtn = $('#recenterBtn');
+const statusEl = $('#status');
+const accVal = $('#accVal');
+const dataCountVal = $('#dataCountVal');
+const collectionTimeVal = $('#collectionTimeVal');
+const dataRateVal = $('#dataRateVal');
+const motionDistVal = $('#motionDistVal');
+const disp3dVal = $('#disp3dVal');
 
-const accVal = document.getElementById('accVal');
-const dataCountVal = document.getElementById('dataCountVal');
-const collectionTimeVal = document.getElementById('collectionTimeVal');
-const dataRateVal = document.getElementById('dataRateVal');
-const motionDistVal = document.getElementById('motionDistVal');
-const disp3dVal = document.getElementById('disp3dVal');
+const accxctx = $('#accxCanvas').getContext('2d');
+const accyctx = $('#accyCanvas').getContext('2d');
+const acczctx = $('#acczCanvas').getContext('2d');
+const accmctx = $('#accmCanvas').getContext('2d');
 
-const accxctx = document.getElementById('accxCanvas').getContext('2d');
-const accyctx = document.getElementById('accyCanvas').getContext('2d');
-const acczctx = document.getElementById('acczCanvas').getContext('2d');
-const accmctx = document.getElementById('accmCanvas').getContext('2d');
-
-// ================== Helpers ==================
 function setStatus(msg){ statusEl.textContent = msg; }
 
+// ================== GATT op serialization ==================
+let gattLock = Promise.resolve();
+function withGattLock(fn){
+  gattLock = gattLock.then(fn, fn);
+  return gattLock;
+}
+
+// ================== Helpers ==================
 function resetMotion(){
   baselineCollecting = true;
   baselineReady = false;
@@ -234,16 +230,12 @@ function resetMotion(){
   vel = {x:0,y:0,z:0};
   pos = {x:0,y:0,z:0};
   lastSampleTime = null;
-  motionPath = [{x:0,y:0,z:0}];
-  // Also reset visualization center to this new start (central ref at (0,0,0))
-  originOffset = {x:0,y:0,z:0};
-  // 3D path wipe
+  originOffset = {x:0,y:0,z:0}; // central reference at start
   resetThreePath();
-  setStatus('Motion reset. Hold device steady ~1s to capture baseline…');
+  setStatus('Motion reset. Hold steady ~1s to capture baseline…');
 }
 
 function setCurrentAsCenter(){
-  // shift visual reference so current pos appears at (0,0,0)
   originOffset = {x:pos.x, y:pos.y, z:pos.z};
   setStatus('Visualization recentered on current position.');
 }
@@ -260,37 +252,31 @@ function addToBaseline(sampleG){
     baselineCollecting = false;
     baselineReady = true;
     setStatus('Baseline captured. Tracking from central reference.');
-    // When baseline first becomes ready right after connect, lock the central ref at (0,0,0)
-    // (originOffset already 0 from resetMotion).
   }
 }
 
 function processMotionSample(sampleG, t){
   if (baselineCollecting){ addToBaseline(sampleG); return; }
-  if (!baselineReady){ return; }
+  if (!baselineReady) return;
 
   if (lastSampleTime == null){ lastSampleTime = t; return; }
   let dt = t - lastSampleTime;
   if (dt <= 0 || dt > 0.2) dt = 1 / TARGET_FS;
   lastSampleTime = t;
 
-  // subtract baseline (gravity/bias) and convert g -> m/s^2
+  // subtract baseline (g) and convert
   const ax = (sampleG.x - baselineAcc.x) * G;
   const ay = (sampleG.y - baselineAcc.y) * G;
   const az = (sampleG.z - baselineAcc.z) * G;
 
-  // integrate velocity & position
-  vel.x = (vel.x + ax * dt) * VEL_DAMP_PER_SAMPLE;
-  vel.y = (vel.y + ay * dt) * VEL_DAMP_PER_SAMPLE;
-  vel.z = (vel.z + az * dt) * VEL_DAMP_PER_SAMPLE;
+  vel.x = (vel.x + ax*dt) * VEL_DAMP_PER_SAMPLE;
+  vel.y = (vel.y + ay*dt) * VEL_DAMP_PER_SAMPLE;
+  vel.z = (vel.z + az*dt) * VEL_DAMP_PER_SAMPLE;
 
   pos.x += vel.x * dt;
   pos.y += vel.y * dt;
   pos.z += vel.z * dt;
 
-  motionPath.push({x:pos.x, y:pos.y, z:pos.z});
-  if (motionPath.length > 60000) motionPath.shift(); // cap
-  // push to 3D geometry (visual frame)
   pushThreePoint(pos.x - originOffset.x, pos.y - originOffset.y, pos.z - originOffset.z);
 }
 
@@ -299,28 +285,24 @@ function keepWindow(){
 }
 
 function saveAccelerometerData(){
-  if (!accBuffer || accBuffer.length === 0){ alert('No accelerometer data to save'); return; }
-  let csvContent = 'timestamp,x,y,z,magnitude\n';
-  accBuffer.forEach(sample => {
-    csvContent += `${sample.t},${sample.x},${sample.y},${sample.z},${sample.m}\n`;
-  });
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  if (!accBuffer.length){ alert('No accelerometer data to save'); return; }
+  let csv = 'timestamp,x,y,z,magnitude\n';
+  for (const s of accBuffer) csv += `${s.t},${s.x},${s.y},${s.z},${s.m}\n`;
+  const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = `accelerometer_data_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  setStatus(`Saved ${accBuffer.length} accelerometer samples to CSV`);
+  a.href=url; a.download=`accelerometer_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  setStatus(`Saved ${accBuffer.length} samples to CSV`);
 }
 
 function showDebugInfo(){
-  console.log('=== DEBUG INFO ===');
-  console.log('Device connected:', !!device);
-  console.log('Server connected:', !!server);
-  console.log('Data characteristic:', !!dataChar);
+  console.log('=== DEBUG ===');
+  console.log('Device connected?', !!device);
+  console.log('Server connected?', !!server);
+  console.log('dataChar?', !!dataChar);
   console.log('Raw frames:', rawDataCount);
-  console.log('ACC samples:', accBuffer.length);
+  console.log('ACC buffer:', accBuffer.length);
   console.log('Baseline ready:', baselineReady, 'collecting:', baselineCollecting);
   console.log('Baseline (g):', baselineAcc);
   console.log('Velocity (m/s):', vel);
@@ -328,184 +310,194 @@ function showDebugInfo(){
   alert('Debug info printed to console.');
 }
 
-// ================== Plotting (2D) ==================
+// ================== Tiny plotting for 2D ==================
 function drawSeries(ctx, data){
-  const w = ctx.canvas.width, h = ctx.canvas.height;
+  const w=ctx.canvas.width, h=ctx.canvas.height;
   ctx.clearRect(0,0,w,h);
-  ctx.save();
-  ctx.translate(60,10); // margins
-  const iw = w - 70, ih = h - 50;
-  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-  ctx.lineWidth = 1;
+  ctx.save(); ctx.translate(60,10);
+  const iw=w-70, ih=h-50;
+  ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=1;
   for (let i=0;i<5;i++){ const y=10+i*(ih/4); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(iw,y); ctx.stroke(); }
   for (let i=0;i<5;i++){ const x=i*(iw/4); ctx.beginPath(); ctx.moveTo(x,10); ctx.lineTo(x,ih+10); ctx.stroke(); }
   if (!data || data.x.length<2){ ctx.restore(); return; }
-  const x=data.x, y=data.y;
-  const xmin=Math.min(...x), xmax=Math.max(...x);
-  const ymin=Math.min(...y), ymax=Math.max(...y);
+  const xs=data.x, ys=data.y;
+  const xmin=Math.min(...xs), xmax=Math.max(...xs);
+  const ymin=Math.min(...ys), ymax=Math.max(...ys);
   const sx=v=>(v-xmin)/(xmax-xmin+1e-9)*iw;
   const sy=v=>ih-(v-ymin)/(ymax-ymin+1e-9)*ih;
   ctx.strokeStyle='rgba(34,211,238,0.9)'; ctx.lineWidth=2;
-  ctx.beginPath(); ctx.moveTo(sx(x[0]), sy(y[0]));
-  for (let i=1;i<x.length;i++) ctx.lineTo(sx(x[i]), sy(y[i]));
+  ctx.beginPath(); ctx.moveTo(sx(xs[0]), sy(ys[0]));
+  for (let i=1;i<xs.length;i++) ctx.lineTo(sx(xs[i]), sy(ys[i]));
   ctx.stroke();
   ctx.restore();
 }
 
 function updateUI(){
-  // acceleration display
-  if (accBuffer.length > 0){
-    const latest = accBuffer[accBuffer.length - 1];
-    accVal.innerHTML = latest.m.toFixed(2) + ' <small>g</small>';
+  // Acc magnitude
+  if (accBuffer.length){
+    accVal.innerHTML = accBuffer[accBuffer.length-1].m.toFixed(2) + ' <small>g</small>';
   } else accVal.innerHTML = '— <small>g</small>';
 
-  // distances
-  const last = motionPath.length ? motionPath[motionPath.length-1] : {x:0,y:0,z:0};
-  const xy = Math.hypot(last.x, last.y);
-  const d3 = Math.hypot(last.x, last.y, last.z);
-  motionDistVal.innerHTML = xy.toFixed(2) + ' <small>m</small>';
-  disp3dVal.innerHTML = d3.toFixed(2) + ' <small>m</small>';
+  // Distances from central ref (visual)
+  const vx = pos.x - originOffset.x, vy = pos.y - originOffset.y, vz = pos.z - originOffset.z;
+  motionDistVal.innerHTML = Math.hypot(vx,vy).toFixed(2) + ' <small>m</small>';
+  disp3dVal.innerHTML = Math.hypot(vx,vy,vz).toFixed(2) + ' <small>m</small>';
 
-  // data counters
+  // Counters
   dataCountVal.innerHTML = accBuffer.length + ' <small>samples</small>';
   if (startTime){
-    const minutes = Math.floor(((Date.now()/1000) - startTime) / 60);
+    const minutes = Math.floor(((Date.now()/1000)-startTime)/60);
     collectionTimeVal.innerHTML = minutes + ' <small>minutes</small>';
   } else collectionTimeVal.innerHTML = '0 <small>minutes</small>';
 
   const now = Date.now()/1000;
-  if (lastDataTime > 0 && now > lastDataTime){
+  if (lastDataTime>0 && now>lastDataTime){
     const hz = (accBuffer.length - lastDataCount) / (now - lastDataTime);
     dataRateVal.innerHTML = hz.toFixed(1) + ' <small>Hz</small>';
   } else dataRateVal.innerHTML = '0.0 <small>Hz</small>';
   lastDataCount = accBuffer.length; lastDataTime = now;
 
-  // 2D charts
-  if (accBuffer.length >= 2){
+  // 2D plots
+  if (accBuffer.length>=2){
     const t = accBuffer.map(p=>p.t);
-    drawSeries(accxctx, { x:t, y:accBuffer.map(p=>p.x) });
-    drawSeries(accyctx, { x:t, y:accBuffer.map(p=>p.y) });
-    drawSeries(acczctx, { x:t, y:accBuffer.map(p=>p.z) });
-    drawSeries(accmctx, { x:t, y:accBuffer.map(p=>p.m) });
+    drawSeries(accxctx, {x:t, y:accBuffer.map(p=>p.x)});
+    drawSeries(accyctx, {x:t, y:accBuffer.map(p=>p.y)});
+    drawSeries(acczctx, {x:t, y:accBuffer.map(p=>p.z)});
+    drawSeries(accmctx, {x:t, y:accBuffer.map(p=>p.m)});
   } else {
     drawSeries(accxctx,{x:[],y:[]}); drawSeries(accyctx,{x:[],y:[]});
     drawSeries(acczctx,{x:[],y:[]}); drawSeries(accmctx,{x:[],y:[]});
   }
 
   // HUD
-  const hud = document.getElementById('hudInfo');
-  hud.textContent = `baseline: ${baselineReady ? 'ready' : (baselineCollecting ? 'collecting…' : '—')} | ` +
-                    `points: ${threeLineCount()} | pos: (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) m`;
+  $('#hudInfo').textContent =
+    `baseline: ${baselineReady ? 'ready' : (baselineCollecting ? 'collecting…' : '—')} | ` +
+    `pos: (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) m | points: ${threeLineCount()}`;
 }
 
-// ================== BLE Parse ==================
+// ================== BLE parsing ==================
 function parseAcc(dataView){
-  const samples = [];
-  if (dataView.byteLength < 10) return samples;
+  const samples=[];
+  if (dataView.byteLength<10) return samples;
   const accuracy = dataView.getUint8(9);
-  let sampleSize = (accuracy === 0x00) ? 3 : 6;
-  let offset = 10;
-  for (let i = offset; i + sampleSize - 1 < dataView.byteLength; i += sampleSize){
+  const size = (accuracy===0x00) ? 3 : 6;
+  const off = 10;
+  for (let i=off; i+size-1<dataView.byteLength; i+=size){
     let x,y,z;
-    if (sampleSize === 3){
-      x = dataView.getInt8(i) / 1000.0;
-      y = dataView.getInt8(i+1) / 1000.0;
-      z = dataView.getInt8(i+2) / 1000.0;
+    if (size===3){
+      x=dataView.getInt8(i)/1000; y=dataView.getInt8(i+1)/1000; z=dataView.getInt8(i+2)/1000;
     } else {
-      x = dataView.getInt16(i, true) / 1000.0;
-      y = dataView.getInt16(i+2, true) / 1000.0;
-      z = dataView.getInt16(i+4, true) / 1000.0;
+      x=dataView.getInt16(i,true)/1000; y=dataView.getInt16(i+2,true)/1000; z=dataView.getInt16(i+4,true)/1000;
     }
-    const m = Math.hypot(x,y,z);
-    samples.push({x,y,z,m});
+    samples.push({x,y,z,m:Math.hypot(x,y,z)});
   }
   return samples;
 }
 
-function parsePMD(dataView){
-  if (dataView.byteLength < 9) return null;
-  const frametype = dataView.getUint8(0);
-  const timestamp = dataView.getBigUint64(1, true);
-  if (frametype === 0x02 || frametype === 0x00){
-    const accSamples = parseAcc(dataView);
-    if (accSamples.length) return {timestamp, accSamples};
+function parsePMD(dv){
+  if (dv.byteLength<9) return null;
+  const ft = dv.getUint8(0);
+  const ts = dv.getBigUint64(1,true);
+  if (ft===0x02 || ft===0x00){
+    const accSamples = parseAcc(dv);
+    if (accSamples.length) return {timestamp:ts, accSamples};
   }
   return null;
 }
 
 // ================== BLE Flow ==================
+async function gattConnectWithTimeout(dev){
+  const connectPromise = dev.gatt.connect();
+  const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error('Connection timeout')), CONNECT_TIMEOUT_MS));
+  return Promise.race([connectPromise, timeout]);
+}
+
 async function connect(){
-  try{
-    setStatus('Requesting device…');
-    device = await navigator.bluetooth.requestDevice({
-      filters: [{ name: 'Polar H10' }, { namePrefix: 'Polar' }],
-      optionalServices: [HR_SERVICE_UUID, PMD_SERVICE_UUID],
-      acceptAllDevices: false
-    });
+  setStatus('Requesting device…');
+  // Less picky: show picker for all, but request PMD service access
+  device = await navigator.bluetooth.requestDevice({
+    acceptAllDevices: true,
+    optionalServices: [HR_SERVICE_UUID, PMD_SERVICE_UUID]
+  });
+  device.addEventListener('gattserverdisconnected', onDisconnected);
 
-    device.addEventListener('gattserverdisconnected', onDisconnected);
-    setStatus('Connecting…');
+  // Retry a few times
+  let attempt=0, max=3;
+  while (attempt<max){
+    try{
+      setStatus(`Connecting… (try ${attempt+1}/${max})`);
+      server = await gattConnectWithTimeout(device);
+      break;
+    }catch(e){
+      attempt++;
+      if (attempt>=max) throw e;
+      await new Promise(r=>setTimeout(r,1500));
+    }
+  }
 
-    const connectPromise = device.gatt.connect();
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000));
-    server = await Promise.race([connectPromise, timeoutPromise]);
+  setStatus('Getting services…');
 
-    setStatus('Getting services…');
-    try { await server.getPrimaryService('0000180a-0000-1000-8000-00805f9b34fb'); } catch {}
+  // (best-effort) Device info/HR jiggle to wake device
+  try { await server.getPrimaryService('0000180a-0000-1000-8000-00805f9b34fb'); } catch {}
+  try {
+    const hrSvc = await server.getPrimaryService(HR_SERVICE_UUID);
+    const hrChar = await hrSvc.getCharacteristic(HR_MEAS_UUID);
+    try { await withGattLock(()=>hrChar.startNotifications()); setTimeout(()=>{ try{ hrChar.stopNotifications(); }catch{} }, 1000); } catch {}
+  } catch {}
 
-    const pmdSvc = await server.getPrimaryService(PMD_SERVICE_UUID);
-    const ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
+  // PMD control + data
+  const pmdSvc = await server.getPrimaryService(PMD_SERVICE_UUID);
+  const ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
+  dataChar = await pmdSvc.getCharacteristic(PMD_CHAR2_UUID);
 
-    setStatus('Starting accelerometer stream…');
-    // HR jiggle to wake device (best-effort)
-    try {
-      const hrSvc = await server.getPrimaryService(HR_SERVICE_UUID);
-      const hrChar = await hrSvc.getCharacteristic(HR_MEAS_UUID);
-      try { await hrChar.startNotifications(); setTimeout(()=>{ try{ hrChar.stopNotifications(); }catch{} }, 1000); } catch {}
-    } catch {}
+  // Start ACC stream (write twice with a gap helps some stacks)
+  await withGattLock(()=>ctrlChar.writeValueWithoutResponse(ACC_WRITE));
+  await new Promise(r=>setTimeout(r,900));
+  await withGattLock(()=>ctrlChar.writeValueWithoutResponse(ACC_WRITE));
 
-    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
-    await new Promise(r => setTimeout(r, 1000));
-    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
-    await new Promise(r => setTimeout(r, 1500));
+  dataChar.addEventListener('characteristicvaluechanged', onPMD);
+  await withGattLock(()=>dataChar.startNotifications());
 
-    dataChar = await pmdSvc.getCharacteristic(PMD_CHAR2_UUID);
-    dataChar.addEventListener('characteristicvaluechanged', onPMD);
-    await dataChar.startNotifications();
+  setStatus('Connected. Streaming accelerometer data…');
+  connectBtn.disabled = true;
+  disconnectBtn.disabled = false;
+  retryBtn.disabled = false;
+  resetMotionBtn.disabled = false;
+  recenterBtn.disabled = false;
 
-    setStatus('Connected. Streaming accelerometer data…');
-    connectBtn.disabled = true;
-    disconnectBtn.disabled = false;
-    retryBtn.disabled = false;
-    resetMotionBtn.disabled = false;
-    recenterBtn.disabled = false;
+  startTime = Date.now()/1000;
 
-    startTime = Date.now()/1000;
+  // Start loops
+  if (updateTimer) clearInterval(updateTimer);
+  if (uiTimer) clearInterval(uiTimer);
+  updateTimer = setInterval(keepWindow, 1000);
+  uiTimer = setInterval(()=>{ updateUI(); renderThree(); }, 100);
 
-    // Start loops
-    if (updateTimer) clearInterval(updateTimer);
-    if (uiTimer) clearInterval(uiTimer);
-    updateTimer = setInterval(()=>keepWindow(), 1000);
-    uiTimer = setInterval(()=>{ updateUI(); renderThree(); }, 100);
+  // Auto baseline + center
+  resetMotion();
 
-    // Auto-begin baseline and clear 3D plot
-    resetMotion();
+  // If no frames show up quickly, try an alternate command
+  setTimeout(async ()=>{
+    if (rawDataCount===0){
+      setStatus('Connected but no data yet. Trying alternative activation…');
+      const alt = new Uint8Array([0x02,0x02,0x00,0x01,0xC8,0x00,0x01,0x01,0x10,0x00]);
+      try { await withGattLock(()=>ctrlChar.writeValueWithoutResponse(alt)); } catch {}
+    }
+  }, 4000);
+}
 
-    setTimeout(async ()=>{
-      if (rawDataCount === 0){
-        setStatus('Connected but no data yet. Trying alt activation…');
-        const alt = new Uint8Array([0x02,0x02,0x00,0x01,0xC8,0x00,0x01,0x01,0x10,0x00]);
-        try { await ctrlChar.writeValueWithoutResponse(alt); } catch {}
-      }
-    }, 4000);
-
-  } catch(err){
-    console.error(err);
-    if (err.name === 'NotFoundError') setStatus('No Polar H10 found.');
-    else if (err.name === 'SecurityError') setStatus('Bluetooth access denied.');
-    else if (err.message === 'Connection timeout') setStatus('Connection timeout.');
-    else setStatus('Error: ' + err.message);
-    throw err;
+function onPMD(event){
+  const dv = event.target.value;
+  rawDataCount++;
+  const parsed = parsePMD(dv);
+  if (!parsed) return;
+  const tNow = Number(parsed.timestamp)/1e9;
+  const n = parsed.accSamples.length;
+  for (let i=0;i<n;i++){
+    const s = parsed.accSamples[i];
+    const t = tNow - (n - i - 1) / TARGET_FS; // even spread
+    accBuffer.push({t, x:s.x, y:s.y, z:s.z, m:s.m});
+    processMotionSample(s, t);
   }
 }
 
@@ -523,41 +515,27 @@ function onDisconnected(){
 
 async function disconnect(){
   try{
-    if (!device) return;
     if (dataChar){ try{ await dataChar.stopNotifications(); } catch{} }
-    if (device.gatt.connected) device.gatt.disconnect();
-  } catch(err){ console.error(err); }
+    if (device?.gatt?.connected) device.gatt.disconnect();
+  }catch(e){ console.error(e); }
 }
 
-function onPMD(event){
-  const dv = event.target.value;
-  rawDataCount++;
-  const parsed = parsePMD(dv);
-  if (!parsed) return;
-  const tNow = Number(parsed.timestamp) / 1e9;
-  const n = parsed.accSamples.length;
-  for (let i = 0; i < n; i++){
-    const s = parsed.accSamples[i];
-    const t = tNow - (n - i - 1) / TARGET_FS;
-    accBuffer.push({ t, x:s.x, y:s.y, z:s.z, m:s.m });
-    processMotionSample(s, t);
-  }
-}
+// Retry “activation” without reconnecting
+retryBtn.addEventListener('click', async ()=>{
+  try{
+    if (!server) return;
+    const pmdSvc = await server.getPrimaryService(PMD_SERVICE_UUID);
+    const ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
+    await withGattLock(()=>ctrlChar.writeValueWithoutResponse(ACC_WRITE));
+    setStatus('Retry command sent.');
+  }catch(e){ setStatus('Retry failed: '+e.message); }
+});
 
 // ================== Events ==================
 connectBtn.addEventListener('click', connectWithRetry);
 disconnectBtn.addEventListener('click', disconnect);
 saveAccBtn.addEventListener('click', saveAccelerometerData);
 debugBtn.addEventListener('click', showDebugInfo);
-retryBtn.addEventListener('click', async ()=>{
-  try{
-    if (!server) return;
-    const pmdSvc = await server.getPrimaryService(PMD_SERVICE_UUID);
-    const ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
-    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
-    setStatus('Retry sent.');
-  }catch(e){ setStatus('Retry failed: '+e.message); }
-});
 resetMotionBtn.addEventListener('click', resetMotion);
 recenterBtn.addEventListener('click', setCurrentAsCenter);
 
@@ -570,20 +548,20 @@ if (!('bluetooth' in navigator)){
   setStatus(isMac ? 'Ready. On macOS, ensure Bluetooth is enabled and H10 is paired.' : 'Ready. Make sure Bluetooth is on and H10 is nearby.');
 }
 
-// Retry wrapper
+// Connect with retries wrapper
 let connectionRetries = 0;
 const maxRetries = 3;
-async function connectWithRetry() {
-  try {
+async function connectWithRetry(){
+  try{
     await connect();
     connectionRetries = 0;
-  } catch {
+  }catch(e){
     connectionRetries++;
-    if (connectionRetries < maxRetries) {
+    if (connectionRetries < maxRetries){
       setStatus(`Connection failed. Retrying… (${connectionRetries}/${maxRetries})`);
-      setTimeout(connectWithRetry, 2000);
+      setTimeout(connectWithRetry, 1800);
     } else {
-      setStatus('Connection failed repeatedly. Check device and try again.');
+      setStatus('Connection failed repeatedly. Check battery/contact/nearby apps and try again.');
       connectionRetries = 0;
     }
   }
@@ -591,64 +569,63 @@ async function connectWithRetry() {
 
 // ================== Three.js 3D ==================
 let renderer, scene, camera, controls;
-let lineGeom, lineMesh, linePoints = []; // THREE.Vector3[]
+let lineGeom, lineMesh, linePoints=[];
 let headMesh, originMesh, axesHelper, grid;
 const threeCanvas = document.getElementById('threeCanvas');
 
 function initThree(){
-  renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true });
+  renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias:true });
   resizeThree();
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b1220);
 
-  camera = new THREE.PerspectiveCamera(55, threeCanvas.clientWidth / threeCanvas.clientHeight, 0.01, 1000);
+  camera = new THREE.PerspectiveCamera(55, threeCanvas.clientWidth/threeCanvas.clientHeight, 0.01, 1000);
   camera.position.set(2.5, 2.0, 3.0);
 
   controls = new THREE.OrbitControls(camera, threeCanvas);
   controls.enableDamping = true;
 
   // Lights
-  const amb = new THREE.AmbientLight(0xffffff, 0.6); scene.add(amb);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
   const dir = new THREE.DirectionalLight(0xffffff, 0.6); dir.position.set(3,5,2); scene.add(dir);
 
-  // Grid & axes (meters)
-  grid = new THREE.GridHelper(10, 20, 0x57708a, 0x233044); // 10m wide
-  grid.rotation.x = Math.PI/2; // Make grid X–Z? We’ll keep XY plane by default
-  grid.material.opacity = 0.5; grid.material.transparent = true;
-  // By default GridHelper is XZ. For foot placement, XY is nicer: rotate to lay on XY:
-  grid.rotation.x = 0; // keep XZ? Flip if you prefer XY. We'll add axes for clarity.
+  // Grid & axes
+  grid = new THREE.GridHelper(10, 20, 0x57708a, 0x233044); // 10 m extent
+  // GridHelper is XZ plane by default (good as "floor"). Keep as is.
   scene.add(grid);
 
   axesHelper = new THREE.AxesHelper(1.5); // 1.5 m
   scene.add(axesHelper);
 
-  // Path line
+  // Path
   lineGeom = new THREE.BufferGeometry();
   const lineMat = new THREE.LineBasicMaterial({ color: 0x22d3ee });
   lineMesh = new THREE.Line(lineGeom, lineMat);
   scene.add(lineMesh);
 
-  // Origin marker (central reference)
+  // Central reference marker
   const originGeo = new THREE.SphereGeometry(0.04, 24, 24);
   const originMat = new THREE.MeshStandardMaterial({ color: 0x22c55e });
   originMesh = new THREE.Mesh(originGeo, originMat);
-  originMesh.position.set(0,0,0); // visual origin
+  originMesh.position.set(0,0,0);
   scene.add(originMesh);
 
-  // Head (current position)
+  // Head/current position
   const headGeo = new THREE.SphereGeometry(0.05, 24, 24);
-  const headMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, emissive: 0x332200, emissiveIntensity: 0.3 });
+  const headMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, emissive:0x332200, emissiveIntensity:0.3 });
   headMesh = new THREE.Mesh(headGeo, headMat);
   scene.add(headMesh);
 
   window.addEventListener('resize', resizeThree);
+  resetThreePath();
+  renderThree();
 }
 
 function resizeThree(){
   const w = threeCanvas.clientWidth || threeCanvas.parentElement.clientWidth;
   const h = threeCanvas.clientHeight || threeCanvas.parentElement.clientHeight;
   renderer?.setSize(w, h, false);
-  camera && (camera.aspect = w/h, camera.updateProjectionMatrix());
+  if (camera){ camera.aspect = w/h; camera.updateProjectionMatrix(); }
 }
 
 function resetThreePath(){
@@ -658,11 +635,7 @@ function resetThreePath(){
 }
 
 function pushThreePoint(x,y,z){
-  // NOTE: Coordinate frame here uses:
-  //  X -> device X meters
-  //  Y -> device Y meters
-  //  Z -> device Z meters
-  // If you want gravity-up to be +Z or +Y, you can swap here.
+  // If you prefer a different up-axis mapping, swap here.
   const p = new THREE.Vector3(x, y, z);
   linePoints.push(p);
   if (linePoints.length > 60000) linePoints.shift();
@@ -677,10 +650,8 @@ function renderThree(){
   renderer.render(scene, camera);
 }
 
-// Kick off Three
+// Kick off 3D
 initThree();
-resetThreePath();
-renderThree();
 </script>
 </body>
 </html>
