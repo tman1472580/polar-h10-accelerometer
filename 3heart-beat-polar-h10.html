@@ -189,7 +189,15 @@ let pos = {x:0, y:0, z:0};         // meters
 let lastSampleTime = null;         // seconds
 let motionPath = [];               // [{x,y}] meters
 const MOTION_MAX_POINTS = 20000;   // cap to keep canvas fast
-const VEL_DAMP_PER_SAMPLE = 0.98;  // crude damping to limit drift
+const VEL_DAMP_PER_SAMPLE = 0.97;  // crude damping to limit drift (slightly stronger)
+// Drift control params
+const DEAD_BAND = 0.05;           // m/s^2; treat smaller accelerations as zero (~5 mg)
+const ZUPT_SAMPLES = 30;          // consecutive near-zero samples to declare stationary (~0.15s @ 200 Hz)
+const BASELINE_ALPHA = 0.02;      // EMA rate to adapt baseline when stationary
+const VEL_EPS = 0.008;            // m/s; snap tiny velocities to zero
+
+let prevAcc = {x:0, y:0, z:0};
+let zuptCounter = 0;
 
 // ================== UI Elements ==================
 const connectBtn = document.getElementById('connectBtn');
@@ -273,24 +281,55 @@ function processMotionSample(sample, t){
   lastSampleTime = t;
 
   // subtract baseline (g), convert to m/s^2
-  const ax = (sample.x - baselineAcc.x) * G;
-  const ay = (sample.y - baselineAcc.y) * G;
-  const az = (sample.z - baselineAcc.z) * G;
+  let ax = (sample.x - baselineAcc.x) * G;
+  let ay = (sample.y - baselineAcc.y) * G;
+  let az = (sample.z - baselineAcc.z) * G;
 
-  // integrate: v += a*dt
-  vel.x += ax * dt;
-  vel.y += ay * dt;
-  vel.z += az * dt;
+  // deadband small noise
+  const db = DEAD_BAND;
+  if (Math.abs(ax) < db) ax = 0;
+  if (Math.abs(ay) < db) ay = 0;
+  if (Math.abs(az) < db) az = 0;
 
-  // crude damping to limit runaway drift
-  vel.x *= VEL_DAMP_PER_SAMPLE;
-  vel.y *= VEL_DAMP_PER_SAMPLE;
-  vel.z *= VEL_DAMP_PER_SAMPLE;
+  // Zero-velocity detection window
+  if (ax === 0 && ay === 0 && az === 0) {
+    zuptCounter++;
+  } else {
+    zuptCounter = 0;
+  }
 
-  // s += v*dt
-  pos.x += vel.x * dt;
-  pos.y += vel.y * dt;
-  pos.z += vel.z * dt;
+  // Trapezoidal integration for velocity
+  let vxNew = vel.x + 0.5 * (prevAcc.x + ax) * dt;
+  let vyNew = vel.y + 0.5 * (prevAcc.y + ay) * dt;
+  let vzNew = vel.z + 0.5 * (prevAcc.z + az) * dt;
+
+  // Damping
+  vxNew *= VEL_DAMP_PER_SAMPLE;
+  vyNew *= VEL_DAMP_PER_SAMPLE;
+  vzNew *= VEL_DAMP_PER_SAMPLE;
+
+  // If stationary for a short window, snap velocity to zero
+  if (zuptCounter >= ZUPT_SAMPLES){
+    vxNew = 0; vyNew = 0; vzNew = 0;
+    // Slowly adapt baseline towards current reading (tracks tiny tilt changes)
+    baselineAcc.x = (1 - BASELINE_ALPHA) * baselineAcc.x + BASELINE_ALPHA * sample.x;
+    baselineAcc.y = (1 - BASELINE_ALPHA) * baselineAcc.y + BASELINE_ALPHA * sample.y;
+    baselineAcc.z = (1 - BASELINE_ALPHA) * baselineAcc.z + BASELINE_ALPHA * sample.z;
+  }
+
+  // Snap tiny velocities to zero
+  if (Math.abs(vxNew) < VEL_EPS) vxNew = 0;
+  if (Math.abs(vyNew) < VEL_EPS) vyNew = 0;
+  if (Math.abs(vzNew) < VEL_EPS) vzNew = 0;
+
+  // Trapezoidal integration for position
+  pos.x += 0.5 * (vel.x + vxNew) * dt;
+  pos.y += 0.5 * (vel.y + vyNew) * dt;
+  pos.z += 0.5 * (vel.z + vzNew) * dt;
+
+  // Commit state for next step
+  vel.x = vxNew; vel.y = vyNew; vel.z = vzNew;
+  prevAcc.x = ax; prevAcc.y = ay; prevAcc.z = az;
 
   motionPath.push({x: pos.x, y: pos.y});
   if (motionPath.length > MOTION_MAX_POINTS) motionPath.shift();
