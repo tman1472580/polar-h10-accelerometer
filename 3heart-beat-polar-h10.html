@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Polar H10 → Accelerometer Data Logger (Web Bluetooth, 3D Motion)</title>
+  <title>Polar H10 → Accelerometer Data Logger (with XY Position)</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -14,6 +14,7 @@
       --good: #34d399;
       --fair: #f59e0b;
       --poor: #f87171;
+      --vector: #6366f1; /* indigo for displacement vector */
     }
     html, body { height: 100%; }
     body {
@@ -37,30 +38,24 @@
     button:disabled{ opacity:.5; cursor:not-allowed; box-shadow:none; transform:none; }
     .status { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
 
-    .statbox { display:flex; gap:20px; align-items: center; justify-content: space-between; }
-    .stat { background: #0b1220; border: 1px solid rgba(255,255,255,.06); border-radius: 14px; padding: 14px 16px; flex:1; }
+    .statbox { display:flex; gap:20px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .stat { background: #0b1220; border: 1px solid rgba(255,255,255,.06); border-radius: 14px; padding: 14px 16px; flex:1; min-width: 220px; }
     .label { color: var(--muted); font-size: 12px; letter-spacing:.05em; text-transform: uppercase; }
-    .value { font-size: 32px; font-weight: 800; }
+    .value { font-size: 24px; font-weight: 800; }
     .value small{ font-size: 14px; font-weight: 600; color: var(--muted); }
     .good { color: var(--good); }
     .fair { color: var(--fair); }
     .poor { color: var(--poor); }
 
     canvas { width: 100%; height: 220px; background: #0b1220; border:1px solid rgba(255,255,255,.06); border-radius: 12px; }
-    /* taller for the 3D container */
-    #motion3DContainer { height: 360px; background: #0b1220; border:1px solid rgba(255,255,255,.06); border-radius: 12px; position: relative; overflow: hidden; }
-    #motion3DContainer .overlay {
-      position:absolute; left:10px; bottom:10px; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: rgba(148,163,184,.9);
-      pointer-events: none;
-    }
+    #motionCanvas { height: 360px; } /* a bit taller for the motion plot */
     footer { margin-top: 24px; color: var(--muted); font-size: 12px; }
     a { color: var(--accent); }
+    .row { display:flex; gap:12px; align-items:center; }
+    .row > * { flex: 1; }
     .tiny { font-size: 12px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   </style>
-  <!-- Three.js (global THREE namespace) -->
-  <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -86,8 +81,12 @@
         <div class="value" id="accVal">— <small>g</small></div>
       </div>
       <div class="stat">
-        <div class="label">Motion Distance (3D)</div>
+        <div class="label">Motion Distance (XY)</div>
         <div class="value" id="motionDistVal">0.00 <small>m</small></div>
+      </div>
+      <div class="stat">
+        <div class="label">Position (X,Y)</div>
+        <div class="value" id="motionPosVal"><span class="mono">0.00 m</span>, <span class="mono">0.00 m</span></div>
       </div>
     </div>
 
@@ -108,15 +107,11 @@
         <div class="label">Accelerometry (magnitude)</div>
         <canvas id="accmCanvas" width="640" height="220"></canvas>
       </div>
-
-      <!-- 3D Motion Viewer -->
       <div style="grid-column: 1 / -1;">
-        <div class="label">Live Motion (3D) — starts at (0,0,0) on reset</div>
-        <div id="motion3DContainer">
-          <div class="overlay">Drag to orbit • Scroll to zoom • Double-click to reset view</div>
-        </div>
+        <div class="label">Live Motion (XY) — starts at (0,0) on reset</div>
+        <canvas id="motionCanvas" width="960" height="360"></canvas>
         <div class="tiny" style="color:var(--muted); margin-top:6px;">
-          Motion is estimated by subtracting a 1-second baseline (gravity/bias) after you click <em>Reset Motion Start</em>, then integrating acceleration in 3D. Expect drift over time.
+          Motion is estimated by subtracting a 1-second baseline (gravity/bias) after you click <em>Reset Motion Start</em>, then integrating acceleration twice (to velocity and position). Expect drift over time.
         </div>
       </div>
     </div>
@@ -192,10 +187,8 @@ let baselineAcc = {x:0, y:0, z:0}; // in g
 let vel = {x:0, y:0, z:0};         // m/s
 let pos = {x:0, y:0, z:0};         // meters
 let lastSampleTime = null;         // seconds
-
-// 3D path (meters)
-let motionPath3D = [];             // [{x,y,z}]
-const MOTION_MAX_POINTS = 20000;   // cap to keep things fast
+let motionPath = [];               // [{x,y}] meters
+const MOTION_MAX_POINTS = 20000;   // cap to keep canvas fast
 const VEL_DAMP_PER_SAMPLE = 0.98;  // crude damping to limit drift
 
 // ================== UI Elements ==================
@@ -212,128 +205,21 @@ const dataCountVal = document.getElementById('dataCountVal');
 const collectionTimeVal = document.getElementById('collectionTimeVal');
 const dataRateVal = document.getElementById('dataRateVal');
 const motionDistVal = document.getElementById('motionDistVal');
+const motionPosVal = document.getElementById('motionPosVal');
 
-// Canvas charts
+// Canvas
 const accxCanvas = document.getElementById('accxCanvas');
 const accyCanvas = document.getElementById('accyCanvas');
 const acczCanvas = document.getElementById('acczCanvas');
 const accmCanvas = document.getElementById('accmCanvas');
+const motionCanvas = document.getElementById('motionCanvas');
 
-// ================== 3D Scene ==================
-const container3D = document.getElementById('motion3DContainer');
-let renderer, scene, camera, controls;
-let grid, axes, originMesh, currentMesh, pathLine;
-let pathGeometry;
-
-function init3D(){
-  if (renderer) return; // already init
-
-  // renderer
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  container3D.appendChild(renderer.domElement);
-
-  // scene & camera
-  scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
-  camera.position.set(2.2, 1.4, 2.2);
-
-  // controls
-  controls = new THREE.OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.target.set(0,0,0);
-  renderer.domElement.addEventListener('dblclick', ()=>{ controls.reset(); });
-
-  // lights
-  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-  const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-  dir.position.set(2,3,4);
-  scene.add(dir);
-
-  // grid & axes (meters)
-  grid = new THREE.GridHelper(4, 8);        // size, divisions
-  grid.material.opacity = 0.2;
-  grid.material.transparent = true;
-  scene.add(grid);
-
-  axes = new THREE.AxesHelper(1.5);
-  scene.add(axes);
-
-  // origin (centre) sphere — green
-  const originGeo = new THREE.SphereGeometry(0.035, 24, 24);
-  const originMat = new THREE.MeshStandardMaterial({ color: 0x34d399, metalness: 0.1, roughness: 0.6 });
-  originMesh = new THREE.Mesh(originGeo, originMat);
-  originMesh.position.set(0,0,0);
-  scene.add(originMesh);
-
-  // current pos sphere — amber
-  const currGeo = new THREE.SphereGeometry(0.04, 24, 24);
-  const currMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, emissive: 0x000000, metalness: 0.1, roughness: 0.5 });
-  currentMesh = new THREE.Mesh(currGeo, currMat);
-  currentMesh.position.set(0,0,0);
-  scene.add(currentMesh);
-
-  // path line
-  pathGeometry = new THREE.BufferGeometry();
-  const mat = new THREE.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.9 });
-  pathLine = new THREE.Line(pathGeometry, mat);
-  scene.add(pathLine);
-
-  // size + resize
-  function resize(){
-    const w = container3D.clientWidth;
-    const h = container3D.clientHeight;
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-    renderer.setSize(w, h, false);
-  }
-  window.addEventListener('resize', resize);
-  resize();
-
-  // loop
-  (function animate(){
-    requestAnimationFrame(animate);
-    controls.update();
-    renderer.render(scene, camera);
-  })();
-}
-
-function update3DPath(){
-  // Convert motionPath3D to Float32Array
-  const n = motionPath3D.length;
-  if (n < 2){
-    pathGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
-    pathGeometry.setDrawRange(0, 0);
-    pathGeometry.computeBoundingSphere();
-    return;
-  }
-  const arr = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++){
-    const p = motionPath3D[i];
-    arr[i*3+0] = p.x;
-    arr[i*3+1] = p.y;
-    arr[i*3+2] = p.z;
-  }
-  pathGeometry.setAttribute('position', new THREE.BufferAttribute(arr, 3));
-  pathGeometry.setDrawRange(0, n);
-  pathGeometry.computeBoundingSphere();
-
-  // Auto-expand grid if we roam far: base on max radius
-  const r = Math.max(
-    Math.abs(pathGeometry.boundingSphere.center.x) + pathGeometry.boundingSphere.radius,
-    Math.abs(pathGeometry.boundingSphere.center.y) + pathGeometry.boundingSphere.radius,
-    Math.abs(pathGeometry.boundingSphere.center.z) + pathGeometry.boundingSphere.radius
-  );
-  const sizeNeeded = Math.max(2, Math.ceil(r) * 2);
-  if (sizeNeeded > grid.geometry.parameters.size){
-    scene.remove(grid);
-    grid = new THREE.GridHelper(sizeNeeded, Math.max(8, sizeNeeded));
-    grid.material.opacity = 0.2;
-    grid.material.transparent = true;
-    scene.add(grid);
-  }
-}
+// Canvas context
+const accxctx = accxCanvas.getContext('2d');
+const accyctx = accyCanvas.getContext('2d');
+const acczctx = acczCanvas.getContext('2d');
+const accmctx = accmCanvas.getContext('2d');
+const motionctx = motionCanvas.getContext('2d');
 
 // ================== Helpers ==================
 function setStatus(msg){ statusEl.textContent = msg; }
@@ -347,17 +233,15 @@ function resetMotion(){
   baselineAcc = {x:0,y:0,z:0};
   vel = {x:0,y:0,z:0};
   pos = {x:0,y:0,z:0};
-  motionPath3D = [{x:0,y:0,z:0}];
+  motionPath = [{x:0,y:0}];
   lastSampleTime = null;
-  if (currentMesh){ currentMesh.position.set(0,0,0); }
-  update3DPath();
-  if (controls){ controls.target.set(0,0,0); }
   setStatus('Motion reset: hold steady ~1s to capture baseline…');
 }
 
 function addToBaseline(sampleG){
   baselineSamples.push({x:sampleG.x, y:sampleG.y, z:sampleG.z});
   if (baselineSamples.length >= BASELINE_COUNT){
+    // average
     const sum = baselineSamples.reduce((a,s)=>({x:a.x+s.x, y:a.y+s.y, z:a.z+s.z}), {x:0,y:0,z:0});
     baselineAcc = {
       x: sum.x / baselineSamples.length,
@@ -366,7 +250,7 @@ function addToBaseline(sampleG){
     };
     baselineCollecting = false;
     baselineReady = true;
-    setStatus('Baseline captured. Tracking motion from (0,0,0).');
+    setStatus('Baseline captured. Tracking motion from (0,0).');
   }
 }
 
@@ -408,12 +292,10 @@ function processMotionSample(sample, t){
   pos.y += vel.y * dt;
   pos.z += vel.z * dt;
 
-  // store
-  motionPath3D.push({x: pos.x, y: pos.y, z: pos.z});
-  if (motionPath3D.length > MOTION_MAX_POINTS) motionPath3D.shift();
+  motionPath.push({x: pos.x, y: pos.y});
+  if (motionPath.length > MOTION_MAX_POINTS) motionPath.shift();
 }
 
-// Reusable plot helper for 2D charts
 function drawSeries(ctx, data, opts={}){
   const w = ctx.canvas.width, h = ctx.canvas.height;
   ctx.clearRect(0,0,w,h);
@@ -469,7 +351,107 @@ function drawSeries(ctx, data, opts={}){
   ctx.restore();
 }
 
-// ================== BLE Parsing ==================
+// --- Motion plot (XY) ---
+function drawMotion(ctx, path){
+  const w = ctx.canvas.width, h = ctx.canvas.height;
+  ctx.clearRect(0,0,w,h);
+
+  // margins
+  const margin = 20;
+  const iw = w - margin*2;
+  const ih = h - margin*2;
+
+  ctx.save();
+  ctx.translate(margin, margin);
+
+  // grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 1;
+  for (let i=0;i<=4;i++){
+    const x = i*(iw/4);
+    const y = i*(ih/4);
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,ih); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(iw,y); ctx.stroke();
+  }
+
+  if (!path || path.length < 2){ ctx.restore(); return; }
+
+  // determine extents (pad a bit)
+  let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+  for (const p of path){
+    if (!isFinite(p.x) || !isFinite(p.y)) continue;
+    if (p.x < xmin) xmin = p.x;
+    if (p.x > xmax) xmax = p.x;
+    if (p.y < ymin) ymin = p.y;
+    if (p.y > ymax) ymax = p.y;
+  }
+  if (!isFinite(xmin)){ xmin=-1; xmax=1; ymin=-1; ymax=1; }
+  const xpad = (xmax - xmin) * 0.15 + 0.01;
+  const ypad = (ymax - ymin) * 0.15 + 0.01;
+  xmin -= xpad; xmax += xpad; ymin -= ypad; ymax += ypad;
+
+  // keep aspect ratio square in data space
+  const xrange = xmax - xmin;
+  const yrange = ymax - ymin;
+  const scale = Math.min(iw / (xrange || 1), ih / (yrange || 1));
+  const xoff = (iw - scale * xrange) / 2;
+  const yoff = (ih - scale * yrange) / 2;
+
+  const sx = v => xoff + (v - xmin) * scale;
+  const sy = v => ih - (yoff + (v - ymin) * scale);
+
+  // axes cross at origin
+  ctx.strokeStyle = 'rgba(148,163,184,0.35)';
+  ctx.beginPath();
+  ctx.moveTo(sx(0), 0); ctx.lineTo(sx(0), ih); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, sy(0)); ctx.lineTo(iw, sy(0)); ctx.stroke();
+
+  // path (full trajectory)
+  ctx.strokeStyle = 'rgba(34,211,238,0.9)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  let started = false;
+  for (const p of path){
+    const px = sx(p.x), py = sy(p.y);
+    if (!started){ ctx.moveTo(px, py); started = true; }
+    else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+
+  // start point marker
+  const start = path[0];
+  ctx.fillStyle = 'rgba(52,211,153,0.95)'; // greenish
+  ctx.beginPath(); ctx.arc(sx(start.x), sy(start.y), 4, 0, Math.PI*2); ctx.fill();
+
+  // current point marker
+  const end = path[path.length-1];
+  ctx.fillStyle = 'rgba(245,158,11,0.95)'; // amber
+  ctx.beginPath(); ctx.arc(sx(end.x), sy(end.y), 4, 0, Math.PI*2); ctx.fill();
+
+  // straight-line displacement vector from origin → current
+  ctx.save();
+  ctx.setLineDash([6,6]);
+  ctx.strokeStyle = 'rgba(99,102,241,0.9)'; // indigo
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(sx(0), sy(0));
+  ctx.lineTo(sx(end.x), sy(end.y));
+  ctx.stroke();
+  ctx.restore();
+
+  // label current coordinates near the marker
+  ctx.fillStyle = 'rgba(148,163,184,0.95)';
+  ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`[${end.x.toFixed(2)}, ${end.y.toFixed(2)}] m`, sx(end.x), sy(end.y) - 12);
+
+  // origin label
+  ctx.fillText('(0,0)', sx(0), sy(0) - 8);
+
+  ctx.restore();
+}
+
 function parseAcc(dataView){
   const samples = [];
   if (dataView.byteLength < 10) return samples;
@@ -510,7 +492,6 @@ function keepWindow(){
   while (accBuffer.length && accBuffer[0].t < accBuffer[accBuffer.length-1].t - WINDOW_SEC){ accBuffer.shift(); }
 }
 
-// ================== File Save & Debug ==================
 function saveAccelerometerData(){
   if (!accBuffer || accBuffer.length === 0){
     alert('No accelerometer data to save');
@@ -546,8 +527,7 @@ function showDebugInfo(){
   alert(`Debug info logged to console. Check browser console (F12).
 Raw frames: ${rawDataCount}
 ACC samples: ${accBuffer.length}
-Motion baseline: ${baselineReady ? 'ready' : (baselineCollecting ? 'collecting' : 'not set')}
-`);
+Motion baseline: ${baselineReady ? 'ready' : (baselineCollecting ? 'collecting' : 'not set')}`);
 }
 
 async function retryActivation(){
@@ -572,35 +552,34 @@ async function retryActivation(){
   }
 }
 
-// ================== UI Refresh ==================
 function updateUI(){
-  // Acc magnitude
+  // Accelerometry
   if (accBuffer.length > 0){
     const latest = accBuffer[accBuffer.length - 1];
-    accVal.innerHTML = `${latest.m.toFixed(2)} <small>g</small>`;
+    accVal.innerHTML = latest.m.toFixed(2) + ' <small>g</small>';
   } else {
     accVal.innerHTML = '— <small>g</small>';
   }
 
-  // Motion distance (3D, straight-line)
-  if (motionPath3D.length){
-    const p = motionPath3D[motionPath3D.length-1];
-    const dist = Math.hypot(p.x, p.y, p.z);
-    motionDistVal.innerHTML = `${dist.toFixed(2)} <small>m</small>`;
-    if (currentMesh) currentMesh.position.set(p.x, p.y, p.z);
-    update3DPath();
+  // Motion distance (straight-line from origin to current)
+  if (motionPath.length){
+    const p = motionPath[motionPath.length-1];
+    const dist = Math.hypot(p.x, p.y);
+    motionDistVal.innerHTML = dist.toFixed(2) + ' <small>m</small>';
+    motionPosVal.innerHTML = `<span class="mono">${p.x.toFixed(2)} m</span>, <span class="mono">${p.y.toFixed(2)} m</span>`;
   } else {
     motionDistVal.innerHTML = '0.00 <small>m</small>';
+    motionPosVal.innerHTML = '<span class="mono">0.00 m</span>, <span class="mono">0.00 m</span>';
   }
 
   // Data count
-  dataCountVal.innerHTML = `${accBuffer.length} <small>samples</small>`;
+  dataCountVal.innerHTML = accBuffer.length + ' <small>samples</small>';
 
   // Collection time
   if (startTime) {
     const elapsed = (Date.now() / 1000) - startTime;
     const minutes = Math.floor(elapsed / 60);
-    collectionTimeVal.innerHTML = `${minutes} <small>minutes</small>`;
+    collectionTimeVal.innerHTML = minutes + ' <small>minutes</small>';
   } else {
     collectionTimeVal.innerHTML = '0 <small>minutes</small>';
   }
@@ -611,7 +590,7 @@ function updateUI(){
     const timeDiff = currentTime - lastDataTime;
     const dataDiff = accBuffer.length - lastDataCount;
     const dataRate = dataDiff / timeDiff;
-    dataRateVal.innerHTML = `${dataRate.toFixed(1)} <small>Hz</small>`;
+    dataRateVal.innerHTML = dataRate.toFixed(1) + ' <small>Hz</small>';
   } else {
     dataRateVal.innerHTML = '0.0 <small>Hz</small>';
   }
@@ -621,21 +600,24 @@ function updateUI(){
   // ACC plots
   if (accBuffer.length >= 2){
     const t = accBuffer.map(p => p.t);
-    drawSeries(accxCanvas.getContext('2d'), { x:t, y:accBuffer.map(p=>p.x) });
-    drawSeries(accyCanvas.getContext('2d'), { x:t, y:accBuffer.map(p=>p.y) });
-    drawSeries(acczCanvas.getContext('2d'), { x:t, y:accBuffer.map(p=>p.z) });
-    drawSeries(accmCanvas.getContext('2d'), { x:t, y:accBuffer.map(p=>p.m) });
+    drawSeries(accxctx, { x:t, y:accBuffer.map(p=>p.x) });
+    drawSeries(accyctx, { x:t, y:accBuffer.map(p=>p.y) });
+    drawSeries(acczctx, { x:t, y:accBuffer.map(p=>p.z) });
+    drawSeries(accmctx, { x:t, y:accBuffer.map(p=>p.m) });
   } else {
-    const ctxs = [accxCanvas, accyCanvas, acczCanvas, accmCanvas].map(c=>c.getContext('2d'));
-    ctxs.forEach(ctx=> drawSeries(ctx, {x:[], y:[]}) );
+    drawSeries(accxctx, {x:[], y:[]});
+    drawSeries(accyctx, {x:[], y:[]});
+    drawSeries(acczctx, {x:[], y:[]});
+    drawSeries(accmctx, {x:[], y:[]});
   }
+
+  // Motion plot
+  drawMotion(motionctx, motionPath);
 }
 
 // ================== BLE Flow ==================
 async function connect(){
   try{
-    init3D();
-
     setStatus('Requesting device…');
     device = await navigator.bluetooth.requestDevice({
       filters: [{ name: 'Polar H10' }, { namePrefix: 'Polar' }],
@@ -652,7 +634,9 @@ async function connect(){
 
     setStatus('Getting services…');
 
-    try { await server.getPrimaryService('0000180a-0000-1000-8000-00805f9b34fb'); } catch {}
+    try {
+      await server.getPrimaryService('0000180a-0000-1000-8000-00805f9b34fb');
+    } catch {}
 
     const pmdSvc = await server.getPrimaryService(PMD_SERVICE_UUID);
     const ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
@@ -662,7 +646,10 @@ async function connect(){
     try {
       const hrSvc = await server.getPrimaryService(HR_SERVICE_UUID);
       const hrChar = await hrSvc.getCharacteristic(HR_MEAS_UUID);
-      try { await hrChar.startNotifications(); setTimeout(()=>{ try{ hrChar.stopNotifications(); }catch{} }, 1000); } catch {}
+      try {
+        await hrChar.startNotifications();
+        setTimeout(()=>{ try{ hrChar.stopNotifications(); }catch{} }, 1000);
+      } catch {}
     } catch {}
 
     await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
@@ -670,8 +657,7 @@ async function connect(){
     await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
     await new Promise(r => setTimeout(r, 2000));
 
-    const pmdChar2 = await pmdSvc.getCharacteristic(PMD_CHAR2_UUID);
-    dataChar = pmdChar2;
+    dataChar = await pmdSvc.getCharacteristic(PMD_CHAR2_UUID);
     dataChar.addEventListener('characteristicvaluechanged', onPMD);
     await dataChar.startNotifications();
     await new Promise(r => setTimeout(r, 1000));
