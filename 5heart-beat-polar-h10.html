@@ -1,1017 +1,331 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Polar H10 → Accelerometer Data Logger (with XY Position)</title>
-  <style>
-    :root {
-      --bg: #0f172a;
-      --panel: #111827;
-      --muted: #94a3b8;
-      --text: #e5e7eb;
-      --accent: #22d3ee;
-      --good: #34d399;
-      --fair: #f59e0b;
-      --poor: #f87171;
-      --vector: #6366f1; /* indigo for displacement vector */
-    }
-    html, body { height: 100%; }
-    body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Noto Sans, "Apple Color Emoji", "Segoe UI Emoji";
-      background: radial-gradient(1200px 800px at 80% -10%, #1f2937 0, var(--bg) 40%);
-      color: var(--text);
-    }
-    .wrap { max-width: 980px; margin: 32px auto; padding: 0 16px; }
-    header { display:flex; align-items:center; gap:16px; margin-bottom: 16px; }
-    h1 { font-size: clamp(22px, 3vw, 32px); line-height: 1.1; margin: 0; }
-    .tag { padding: 4px 10px; border-radius: 999px; background: #0ea5e9; color:#002233; font-weight:700; font-size:12px; letter-spacing: .04em; }
-
-    .panel { background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(0,0,0,.15)); border: 1px solid rgba(255,255,255,.06); box-shadow: 0 10px 30px rgba(0,0,0,.35); border-radius: 16px; padding: 16px; }
-    .grid { display:grid; grid-template-columns: 1fr; gap: 16px; }
-    @media (min-width: 900px){ .grid{ grid-template-columns: 1.1fr .9fr; } }
-
-    .controls{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
-    button{ appearance:none; border:1px solid rgba(255,255,255,.15); background: #111827; color: var(--text); border-radius: 12px; padding: 10px 14px; font-weight: 600; cursor: pointer; transition: .2s; }
-    button:hover{ transform: translateY(-1px); border-color: rgba(34,211,238,.5); box-shadow: 0 8px 20px rgba(34,211,238,.15); }
-    button:disabled{ opacity:.5; cursor:not-allowed; box-shadow:none; transform:none; }
-    .status { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
-
-    .statbox { display:flex; gap:20px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-    .stat { background: #0b1220; border: 1px solid rgba(255,255,255,.06); border-radius: 14px; padding: 14px 16px; flex:1; min-width: 220px; }
-    .label { color: var(--muted); font-size: 12px; letter-spacing:.05em; text-transform: uppercase; }
-    .value { font-size: 24px; font-weight: 800; }
-    .value small{ font-size: 14px; font-weight: 600; color: var(--muted); }
-    .good { color: var(--good); }
-    .fair { color: var(--fair); }
-    .poor { color: var(--poor); }
-
-    canvas { width: 100%; height: 220px; background: #0b1220; border:1px solid rgba(255,255,255,.06); border-radius: 12px; }
-    #motionCanvas { height: 360px; } /* a bit taller for the motion plot */
-    footer { margin-top: 24px; color: var(--muted); font-size: 12px; }
-    a { color: var(--accent); }
-    .row { display:flex; gap:12px; align-items:center; }
-    .row > * { flex: 1; }
-    .tiny { font-size: 12px; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Polar H10 — One‑File 8h CSV Logger</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#0b1220; --muted:#94a3b8; --text:#e5e7eb; --accent:#22d3ee; --good:#34d399; --warn:#f59e0b; --bad:#f87171;
+  }
+  html,body{height:100%}
+  body{margin:0;background:radial-gradient(1200px 800px at 80% -10%, #1f2937 0, var(--bg) 40%);color:var(--text);font-family:ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial}
+  .wrap{max-width:820px;margin:32px auto;padding:0 16px}
+  h1{font-size:clamp(20px,3vw,30px);margin:0 0 10px}
+  .panel{background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(0,0,0,.15));border:1px solid rgba(255,255,255,.06);box-shadow:0 10px 30px rgba(0,0,0,.35);border-radius:16px;padding:16px}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px}
+  button{appearance:none;border:1px solid rgba(255,255,255,.15);background:#111827;color:var(--text);border-radius:12px;padding:10px 14px;font-weight:600;cursor:pointer;transition:.2s}
+  button:hover{transform:translateY(-1px);border-color:rgba(34,211,238,.5);box-shadow:0 8px 20px rgba(34,211,238,.15)}
+  button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none;transform:none}
+  .status{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:var(--muted)}
+  .stats{display:flex;gap:12px;flex-wrap:wrap}
+  .stat{flex:1;min-width:200px;background:var(--panel);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:12px}
+  .label{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+  .value{font-size:22px;font-weight:800}
+  input[type=number]{width:80px;background:#111827;color:var(--text);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:8px 10px}
+  a{color:var(--accent)}
+</style>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <div class="tag">Web Bluetooth</div>
-    <h1>Polar H10 → Accelerometer Data Logger</h1>
-  </header>
-
+  <h1>Polar H10 — One‑File CSV Logger</h1>
   <div class="panel">
     <div class="controls">
       <button id="connectBtn">🔗 Connect H10</button>
-      <button id="disconnectBtn" disabled>🔌 Disconnect H10</button>
-      <button id="saveAccBtn">💾 Save Accelerometer Data (CSV)</button>
-      <button id="startRecBtn">⏺️ Start Recording (CSV)</button>
-      <button id="stopRecBtn" disabled>⏹️ Stop Recording</button>
-      <label class="tiny" style="display:flex;align-items:center;gap:6px">
+      <button id="disconnectBtn" disabled>🔌 Disconnect</button>
+      <button id="startBtn" disabled>⏺️ Start Recording</button>
+      <button id="stopBtn" disabled>⏹️ Stop Recording</button>
+      <label style="display:flex;align-items:center;gap:6px">
         <span>Flush every</span>
-        <input id="flushSec" type="number" min="1" value="1" style="width:64px; background:#111827; color:var(--text); border:1px solid rgba(255,255,255,.15); border-radius:8px; padding:6px 8px;" />
+        <input id="flushSec" type="number" min="1" value="1" />
         <span>s</span>
       </label>
-      <button id="debugBtn">🐛 Debug Info</button>
-      <button id="retryBtn" disabled>🔄 Retry Activation</button>
-      <button id="resetMotionBtn" disabled>🎯 Reset Motion Start</button>
-      <div class="status" id="status">Idle</div>
+      <div class="status" id="status">Checking support…</div>
     </div>
 
-    <div class="statbox" style="margin-top:12px">
-      <div class="stat">
-        <div class="label">Acceleration</div>
-        <div class="value" id="accVal">— <small>g</small></div>
-      </div>
-      <div class="stat">
-        <div class="label">Motion Distance (XY)</div>
-        <div class="value" id="motionDistVal">0.00 <small>m</small></div>
-      </div>
-      <div class="stat">
-        <div class="label">Position (X,Y)</div>
-        <div class="value" id="motionPosVal"><span class="mono">0.00 m</span>, <span class="mono">0.00 m</span></div>
-      </div>
+    <div class="stats">
+      <div class="stat"><div class="label">Frames</div><div class="value" id="framesVal">0</div></div>
+      <div class="stat"><div class="label">Samples</div><div class="value" id="samplesVal">0</div></div>
+      <div class="stat"><div class="label">Rate</div><div class="value" id="rateVal">0.0 Hz</div></div>
+      <div class="stat"><div class="label">Recording</div><div class="value" id="recVal">No</div></div>
     </div>
 
-    <div class="grid" style="margin-top: 8px">
-      <div>
-        <div class="label">Accelerometry (X axis)</div>
-        <canvas id="accxCanvas" width="640" height="220"></canvas>
-      </div>
-      <div>
-        <div class="label">Accelerometry (Y axis)</div>
-        <canvas id="accyCanvas" width="640" height="220"></canvas>
-      </div>
-      <div>
-        <div class="label">Accelerometry (Z axis)</div>
-        <canvas id="acczCanvas" width="640" height="220"></canvas>
-      </div>
-      <div>
-        <div class="label">Accelerometry (magnitude)</div>
-        <canvas id="accmCanvas" width="640" height="220"></canvas>
-      </div>
-      <div style="grid-column: 1 / -1;">
-        <div class="label">Live Motion (XY) — starts at (0,0) on reset</div>
-        <canvas id="motionCanvas" width="960" height="360"></canvas>
-        <div class="tiny" style="color:var(--muted); margin-top:6px;">
-          Motion is estimated by subtracting a 1-second baseline (gravity/bias) after you click <em>Reset Motion Start</em>, then integrating acceleration twice (to velocity and position). Expect drift over time.
-        </div>
-      </div>
-    </div>
-
-    <div class="statbox" style="margin-top:12px">
-      <div class="stat">
-        <div class="label">Data Points</div>
-        <div class="value" id="dataCountVal">0 <small>samples</small></div>
-      </div>
-      <div class="stat">
-        <div class="label">Collection Time</div>
-        <div class="value" id="collectionTimeVal">0 <small>minutes</small></div>
-      </div>
-      <div class="stat">
-        <div class="label">Data Rate</div>
-        <div class="value" id="dataRateVal">0 <small>Hz</small></div>
-      </div>
-    </div>
-
-    <footer>
-      <p>Notes: Use <strong>Chrome</strong> or another browser that supports Web Bluetooth in a <strong>secure context</strong> (HTTPS or <code>http://localhost</code>). Wear and moisten the strap so it transmits. Data is collected for up to 10 hours and can be exported as CSV.</p>
-    </footer>
+    <p class="status" style="margin-top:10px">Requirements: Chrome/Edge • HTTPS or <code>http://localhost</code> • Keep the tab in the foreground and your machine awake for 8‑hour sessions.</p>
   </div>
 </div>
 
 <script>
-// ================== Config ==================
+// ======== Polar H10 PMD UUIDs ========
 const HR_SERVICE_UUID = 0x180D;
 const HR_MEAS_UUID    = 0x2A37;
-
 const PMD_SERVICE_UUID = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
-const PMD_CHAR1_UUID = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8';
-const PMD_CHAR2_UUID = 'fb005c82-02e7-f387-1cad-8acd2d8df0c8';
+const PMD_CHAR1_UUID   = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8'; // control
+const PMD_CHAR2_UUID   = 'fb005c82-02e7-f387-1cad-8acd2d8df0c8'; // data
 
-const ECG_WRITE = new Uint8Array([
-  0x02, 0x00, 0x00, 0x01,
-  0x82, 0x00, 0x01, 0x01,
-  0x0E, 0x00
-]);
-
+// Start ACC @ 200Hz, 8g, 16-bit (typical Polar command)
 const ACC_WRITE = new Uint8Array([
-  0x02, 0x02, 0x00, 0x01,
-  0xC8, 0x00, 0x01, 0x01,
-  0x10, 0x00, 0x02, 0x01,
-  0x08, 0x00
+  0x02, 0x02, 0x00, 0x01, // type=ACC(0x02), mode=stream(0x02)
+  0xC8, 0x00,             // 0x00C8=200 Hz
+  0x01, 0x01,             // range index, resolution
+  0x10, 0x00,             // samples per frame (16)
+  0x02, 0x01, 0x08, 0x00  // channels=xyz, 16-bit
 ]);
 
-let WINDOW_SEC = 36000;   // 10 hours in seconds
+// ======== State ========
+let device=null, server=null, dataChar=null, ctrlChar=null;
+let rawFrames=0, totalSamples=0;
+let lastCount=0, lastTime=0;
+let uiTimer=null, rateTimer=null;
+let wakeLock=null;
 
-// ================== State ==================
-let device = null;
-let server = null;
-let dataChar = null;
-let accBuffer = []; // [{t: epochSeconds, x: g, y: g, z: g, m: g}]
-let startTime = null;
-let lastDataCount = 0;
-let lastDataTime = 0;
-let rawDataCount = 0;
+// Recording state
+let recording=false;
+let recHandle=null;        // FileSystemFileHandle
+let recWriter=null;        // FileSystemWritableFileStream
+let recBuffer='';
+let recFlushEveryMs=1000;
+let lastFlush=0;
+let reopenTimer=null;      // periodic commit timer
 
-let updateTimer = null;
-let uiTimer = null;
-
-// ----- Motion Estimation State -----
-const G = 9.80665;                 // m/s^2 per 1g
-let baselineCollecting = false;
-let baselineReady = false;
-let baselineSamples = [];          // samples during baseline (in g)
-const BASELINE_SEC = 1.0;          // collect ~1s for baseline
-const TARGET_FS = 200;             // Polar H10 ACC assumed @ 200 Hz
-const BASELINE_COUNT = Math.round(BASELINE_SEC * TARGET_FS);
-
-let baselineAcc = {x:0, y:0, z:0}; // in g
-let vel = {x:0, y:0, z:0};         // m/s
-let pos = {x:0, y:0, z:0};         // meters
-let lastSampleTime = null;         // seconds
-let motionPath = [];               // [{x,y}] meters
-const MOTION_MAX_POINTS = 20000;   // cap to keep canvas fast
-const VEL_DAMP_PER_SAMPLE = 0.97;  // crude damping to limit drift (slightly stronger)
-// Drift control params
-const DB_LO = 0.02;            // m/s^2; soft deadband start (~2 mg)
-const DB_HI = 0.06;            // m/s^2; larger than this we are definitely moving
-const ZUPT_SAMPLES = 30;       // consecutive near-zero samples to declare stationary (~0.15s @ 200 Hz)
-const BASELINE_ALPHA = 0.02;   // EMA rate to adapt baseline when stationary
-const VEL_EPS = 0.008;         // m/s; snap tiny velocities to zero
-const ORIGIN_SNAP_RADIUS = 0.08; // m; if stationary and close to origin, snap back to (0,0)
-const GRAV_TAU = 0.8;          // s; LPF time constant for gravity/tilt estimate // m; if stationary and close to origin, snap back to (0,0)
-            // m/s; snap tiny velocities to zero
-
-let prevAcc = {x:0, y:0, z:0};
-let zuptCounter = 0;
-let gEst = {x:0, y:0, z:1}; // in g; low-pass gravity/tilt estimate
-
-function softDeadband(a){
-  const s = Math.sign(a);
-  const aa = Math.abs(a);
-  if (aa < DB_LO) return 0;
-  // subtract the low threshold so small motions still register (reduced)
-  return s * (aa - DB_LO);
-}
-
-function softDeadband(a){
-  const s = Math.sign(a);
-  const aa = Math.abs(a);
-  if (aa < DB_LO) return 0;
-  // subtract the low threshold so small motions still register (reduced)
-  return s * (aa - DB_LO);
-}
-
-
-// ================== UI Elements ==================
+// ======== UI ========
 const connectBtn = document.getElementById('connectBtn');
 const disconnectBtn = document.getElementById('disconnectBtn');
-const saveAccBtn = document.getElementById('saveAccBtn');
-const startRecBtn = document.getElementById('startRecBtn');
-const stopRecBtn  = document.getElementById('stopRecBtn');
-const debugBtn = document.getElementById('debugBtn');
-const retryBtn = document.getElementById('retryBtn');
-const resetMotionBtn = document.getElementById('resetMotionBtn');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
 const statusEl = document.getElementById('status');
+const flushInput = document.getElementById('flushSec');
+const framesVal = document.getElementById('framesVal');
+const samplesVal = document.getElementById('samplesVal');
+const rateVal = document.getElementById('rateVal');
+const recVal = document.getElementById('recVal');
 
-const accVal = document.getElementById('accVal');
-const dataCountVal = document.getElementById('dataCountVal');
-const collectionTimeVal = document.getElementById('collectionTimeVal');
-const dataRateVal = document.getElementById('dataRateVal');
-const motionDistVal = document.getElementById('motionDistVal');
-const motionPosVal = document.getElementById('motionPosVal');
+function setStatus(s){ statusEl.textContent = s; }
+function setRec(val){ recVal.textContent = val ? 'Yes' : 'No'; }
 
-// Canvas
-const accxCanvas = document.getElementById('accxCanvas');
-const accyCanvas = document.getElementById('accyCanvas');
-const acczCanvas = document.getElementById('acczCanvas');
-const accmCanvas = document.getElementById('accmCanvas');
-const motionCanvas = document.getElementById('motionCanvas');
-
-// Canvas context
-const accxctx = accxCanvas.getContext('2d');
-const accyctx = accyCanvas.getContext('2d');
-const acczctx = acczCanvas.getContext('2d');
-const accmctx = accmCanvas.getContext('2d');
-const motionctx = motionCanvas.getContext('2d');
-const statusEl = document.getElementById('status');
-
-const accVal = document.getElementById('accVal');
-const dataCountVal = document.getElementById('dataCountVal');
-const collectionTimeVal = document.getElementById('collectionTimeVal');
-const dataRateVal = document.getElementById('dataRateVal');
-const motionDistVal = document.getElementById('motionDistVal');
-const motionPosVal = document.getElementById('motionPosVal');
-
-// Canvas
-const accxCanvas = document.getElementById('accxCanvas');
-const accyCanvas = document.getElementById('accyCanvas');
-const acczCanvas = document.getElementById('acczCanvas');
-const accmCanvas = document.getElementById('accmCanvas');
-const motionCanvas = document.getElementById('motionCanvas');
-
-// Canvas context
-const accxctx = accxCanvas.getContext('2d');
-const accyctx = accyCanvas.getContext('2d');
-const acczctx = acczCanvas.getContext('2d');
-const accmctx = accmCanvas.getContext('2d');
-const motionctx = motionCanvas.getContext('2d');
-
-// ================== Helpers ==================
-function setStatus(msg){ statusEl.textContent = msg; }
-
-// ---------- Recording (long run CSV streaming) ----------
-let recording = false;
-let recHandle = null;
-let recWriter = null; // FileSystemWritableFileStream writer
-let recBuffer = '';
-let lastFlush = 0;
-let recordedSamples = 0;
-let recFlushEveryMs = 1000; // configurable
-const REC_MAX_BUFFER = 1_000_000; // chars; flush if bigger
-let wakeLock = null;
-
-async function acquireWakeLock(){
-  try {
-    if ('wakeLock' in navigator) {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', ()=>{
-        console.log('Wake lock released');
-      });
-    }
-  } catch (e) {
-    console.warn('Wake lock not available:', e);
-  }
-}
-
-document.addEventListener('visibilitychange', ()=>{
-  if (document.visibilityState === 'visible' && recording) acquireWakeLock();
-});
-
-async function startRecording(){
-  if (recording) return;
-  try{
-    // single-file guarantee requires File System Access API
-    if (!('showSaveFilePicker' in window)){
-      setStatus('Recording not available: use Chrome/Edge over HTTPS to save to one file.');
-      alert('To record 8+ hours into a single file without memory issues, use Chrome or Edge on HTTPS (or http://localhost).');
-      return;
-    }
-
-    const flushInput = document.getElementById('flushSec');
-    recFlushEveryMs = Math.max(1, Number(flushInput ? flushInput.value : 1)) * 1000;
-
-    recHandle = await window.showSaveFilePicker({
-      suggestedName: `polar_h10_acc_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`,
-      types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }]
-    });
-    recWriter = await recHandle.createWritable();
-    await recWriter.write('timestamp,x,y,z,magnitude
-');
-
-    // keep screen awake during long run
-    acquireWakeLock();
-
-    recording = true;
-    recordedSamples = 0;
-    lastFlush = performance.now();
-    startRecBtn.disabled = true;
-    stopRecBtn.disabled = false;
-    setStatus('Recording to CSV…');
-  } catch(err){
-    console.error('startRecording failed:', err);
-    setStatus('Recording not started: ' + err.message);
-  }
-} catch(err){
-    console.error('startRecording failed:', err);
-    setStatus('Recording not started: ' + err.message);
-  }
-}
-
-async function stopRecording(){
-  if (!recording) return;
-  try{
-    await flushRecording(true);
-    if (recWriter){ await recWriter.close(); recWriter = null; }
-    if (wakeLock) { try { await wakeLock.release(); } catch {} wakeLock = null; }
-    recording = false;
-    startRecBtn.disabled = false;
-    stopRecBtn.disabled = true;
-    setStatus(`Recording stopped. ${recordedSamples} samples saved.`);
-  } catch(err){
-    console.error('stopRecording failed:', err);
-    setStatus('Error stopping recording: ' + err.message);
-  }
-}
-    recording = false;
-    startRecBtn.disabled = false;
-    stopRecBtn.disabled = true;
-    setStatus(`Recording stopped. ${recordedSamples} samples saved.`);
-  } catch(err){
-    console.error('stopRecording failed:', err);
-    setStatus('Error stopping recording: ' + err.message);
-  }
-}
-
-async function flushRecording(force=false){
-  const now = performance.now();
-  if (!recording) return;
-  if (!force && (now - lastFlush < recFlushEveryMs) && recBuffer.length < REC_MAX_BUFFER) return;
-  lastFlush = now;
-  if (recWriter){
-    if (recBuffer.length){ await recWriter.write(recBuffer); recBuffer = ''; }
-  } else {
-    // fallback: trigger a chunk download
-    if (recBuffer.length > 0){
-      const blob = new Blob([recBuffer], {type:'text/csv;charset=utf-8;'});
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `polar_h10_chunk_${String(chunkIndex++).padStart(3,'0')}.csv`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(a.href);
-      recBuffer = 'timestamp,x,y,z,magnitude
-';
-    }
-  }
-}
-
-// --- Motion helpers ---
-function resetMotion(){
-  // clear current state and begin baseline collection
-  baselineCollecting = true;
-  baselineReady = false;
-  baselineSamples = [];
-  baselineAcc = {x:0,y:0,z:0};
-  vel = {x:0,y:0,z:0};
-  pos = {x:0,y:0,z:0};
-  motionPath = [{x:0,y:0}];
-  lastSampleTime = null;
-  setStatus('Motion reset: hold steady ~1s to capture baseline…');
-}
-
-function addToBaseline(sampleG){
-  baselineSamples.push({x:sampleG.x, y:sampleG.y, z:sampleG.z});
-  if (baselineSamples.length >= BASELINE_COUNT){
-    // average
-    const sum = baselineSamples.reduce((a,s)=>({x:a.x+s.x, y:a.y+s.y, z:a.z+s.z}), {x:0,y:0,z:0});
-    baselineAcc = {
-      x: sum.x / baselineSamples.length,
-      y: sum.y / baselineSamples.length,
-      z: sum.z / baselineSamples.length
-    };
-    // initialize gravity estimate to baseline
-    gEst = {x: baselineAcc.x, y: baselineAcc.y, z: baselineAcc.z};
-    baselineCollecting = false;
-    baselineReady = true;
-    setStatus('Baseline captured. Tracking motion from (0,0).');
-  }
-}
-
-function processMotionSample(sample, t){
-  // sample: {x,y,z,m} in g ; t in seconds
-  if (baselineCollecting){ addToBaseline(sample); return; }
-  if (!baselineReady) return; // wait for reset to calibrate
-
-  if (lastSampleTime == null){ lastSampleTime = t; return; }
-  let dt = t - lastSampleTime;
-  if (dt <= 0 || dt > 0.2){ dt = 1 / TARGET_FS; }
-  lastSampleTime = t;
-
-  // --- Tilt compensation via gravity LPF ---
-  // Update gravity estimate with a first-order low-pass filter
-  const alpha = Math.exp(-dt / GRAV_TAU);
-  gEst.x = alpha * gEst.x + (1 - alpha) * sample.x;
-  gEst.y = alpha * gEst.y + (1 - alpha) * sample.y;
-  gEst.z = alpha * gEst.z + (1 - alpha) * sample.z;
-
-  // Linear acceleration (gravity removed), convert to m/s^2
-  let ax = (sample.x - gEst.x) * G;
-  let ay = (sample.y - gEst.y) * G;
-  let az = (sample.z - gEst.z) * G;
-
-  // soft deadband so small movements still register but with reduced magnitude
-  const moving = (Math.abs(ax) > DB_HI) || (Math.abs(ay) > DB_HI) || (Math.abs(az) > DB_HI);
-  ax = softDeadband(ax);
-  ay = softDeadband(ay);
-  az = softDeadband(az);
-
-  // Zero-velocity detection window (post-deadband)
-  if (ax === 0 && ay === 0 && az === 0) { zuptCounter++; } else { zuptCounter = 0; }
-
-  // Trapezoidal integration for velocity
-  let vxNew = vel.x + 0.5 * (prevAcc.x + ax) * dt;
-  let vyNew = vel.y + 0.5 * (prevAcc.y + ay) * dt;
-  let vzNew = vel.z + 0.5 * (prevAcc.z + az) * dt;
-
-  // Damping
-  vxNew *= VEL_DAMP_PER_SAMPLE; vyNew *= VEL_DAMP_PER_SAMPLE; vzNew *= VEL_DAMP_PER_SAMPLE;
-
-  // If stationary briefly, zero velocity and gently align baseline
-  if (zuptCounter >= ZUPT_SAMPLES){
-    vxNew = 0; vyNew = 0; vzNew = 0;
-    // Nudge gravity estimate towards current sample even more when still
-    const a2 = 0.1; // faster adaptation when stationary
-    gEst.x = (1 - a2) * gEst.x + a2 * sample.x;
-    gEst.y = (1 - a2) * gEst.y + a2 * sample.y;
-    gEst.z = (1 - a2) * gEst.z + a2 * sample.z;
-  }
-
-  // Snap tiny velocities to zero
-  if (Math.abs(vxNew) < VEL_EPS) vxNew = 0;
-  if (Math.abs(vyNew) < VEL_EPS) vyNew = 0;
-  if (Math.abs(vzNew) < VEL_EPS) vzNew = 0;
-
-  // Trapezoidal integration for position
-  pos.x += 0.5 * (vel.x + vxNew) * dt;
-  pos.y += 0.5 * (vel.y + vyNew) * dt;
-  pos.z += 0.5 * (vel.z + vzNew) * dt;
-
-  // If we're stationary and very close to origin, snap back to exact (0,0)
-  if (zuptCounter >= ZUPT_SAMPLES) {
-    const dist0 = Math.hypot(pos.x, pos.y);
-    if (dist0 <= ORIGIN_SNAP_RADIUS) { pos.x = 0; pos.y = 0; }
-  }
-
-  // Commit state for next step
-  vel.x = vxNew; vel.y = vyNew; vel.z = vzNew;
-  prevAcc.x = ax; prevAcc.y = ay; prevAcc.z = az;
-
-  motionPath.push({x: pos.x, y: pos.y});
-  if (motionPath.length > MOTION_MAX_POINTS) motionPath.shift();
-}
-
-function drawSeries(ctx, data, opts={}){
-  const w = ctx.canvas.width, h = ctx.canvas.height;
-  ctx.clearRect(0,0,w,h);
-  ctx.save();
-  ctx.translate(60,10);
-  const iw = w - 70, ih = h - 50;
-  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-  ctx.lineWidth = 1;
-  for (let i=0;i<5;i++){
-    const y = 10 + i*(ih/4);
-    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(iw,y); ctx.stroke();
-  }
-  for (let i=0;i<5;i++){
-    const x = i*(iw/4);
-    ctx.beginPath(); ctx.moveTo(x,10); ctx.lineTo(x,ih+10); ctx.stroke();
-  }
-  if (!data || data.x.length<2){ ctx.restore(); return; }
-  const x = data.x, y = data.y;
-  const xmin = Math.min(...x), xmax = Math.max(...x);
-  const ymin = Math.min(...y), ymax = Math.max(...y);
-  const sx = v => (v - xmin) / (xmax - xmin + 1e-9) * iw;
-  const sy = v => ih - (v - ymin) / (ymax - ymin + 1e-9) * ih;
-  const fmt = (val, range)=>{
-    const r = Math.abs(range);
-    if (!isFinite(r) || r < 1e-9) return val.toFixed(3);
-    if (r < 0.5) return val.toFixed(3);
-    if (r < 5) return val.toFixed(2);
-    if (r < 50) return val.toFixed(1);
-    return Math.round(val).toString();
-  };
-  ctx.fillStyle = 'rgba(148,163,184,0.95)';
-  ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  for (let i=0;i<5;i++){
-    const gy = 10 + i*(ih/4);
-    const yval = ymax - (i/4)*(ymax - ymin);
-    ctx.fillText(fmt(yval, ymax - ymin), -6, gy);
-  }
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  for (let i=0;i<5;i++){
-    const gx = i*(iw/4);
-    const xval = xmin + (i/4)*(xmax - xmin);
-    ctx.fillText(fmt(xval, xmax - xmin), gx, ih + 20);
-  }
-  ctx.strokeStyle = 'rgba(34,211,238,0.9)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(sx(x[0]), sy(y[0]));
-  for (let i=1;i<x.length;i++) ctx.lineTo(sx(x[i]), sy(y[i]));
-  ctx.stroke();
-  ctx.restore();
-}
-
-// --- Motion plot (XY) ---
-function drawMotion(ctx, path){
-  const w = ctx.canvas.width, h = ctx.canvas.height;
-  ctx.clearRect(0,0,w,h);
-
-  // margins
-  const margin = 20;
-  const iw = w - margin*2;
-  const ih = h - margin*2;
-
-  ctx.save();
-  ctx.translate(margin, margin);
-
-  // grid
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-  ctx.lineWidth = 1;
-  for (let i=0;i<=4;i++){
-    const x = i*(iw/4);
-    const y = i*(ih/4);
-    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,ih); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(iw,y); ctx.stroke();
-  }
-
-  if (!path || path.length < 2){ ctx.restore(); return; }
-
-  // determine extents (pad a bit)
-  let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
-  for (const p of path){
-    if (!isFinite(p.x) || !isFinite(p.y)) continue;
-    if (p.x < xmin) xmin = p.x;
-    if (p.x > xmax) xmax = p.x;
-    if (p.y < ymin) ymin = p.y;
-    if (p.y > ymax) ymax = p.y;
-  }
-  if (!isFinite(xmin)){ xmin=-1; xmax=1; ymin=-1; ymax=1; }
-  const xpad = (xmax - xmin) * 0.15 + 0.01;
-  const ypad = (ymax - ymin) * 0.15 + 0.01;
-  xmin -= xpad; xmax += xpad; ymin -= ypad; ymax += ypad;
-
-  // keep aspect ratio square in data space
-  const xrange = xmax - xmin;
-  const yrange = ymax - ymin;
-  const scale = Math.min(iw / (xrange || 1), ih / (yrange || 1));
-  const xoff = (iw - scale * xrange) / 2;
-  const yoff = (ih - scale * yrange) / 2;
-
-  const sx = v => xoff + (v - xmin) * scale;
-  const sy = v => ih - (yoff + (v - ymin) * scale);
-
-  // axes cross at origin
-  ctx.strokeStyle = 'rgba(148,163,184,0.35)';
-  ctx.beginPath();
-  ctx.moveTo(sx(0), 0); ctx.lineTo(sx(0), ih); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(0, sy(0)); ctx.lineTo(iw, sy(0)); ctx.stroke();
-
-  // path (full trajectory)
-  ctx.strokeStyle = 'rgba(34,211,238,0.9)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  let started = false;
-  for (const p of path){
-    const px = sx(p.x), py = sy(p.y);
-    if (!started){ ctx.moveTo(px, py); started = true; }
-    else ctx.lineTo(px, py);
-  }
-  ctx.stroke();
-
-  // start point marker
-  const start = path[0];
-  ctx.fillStyle = 'rgba(52,211,153,0.95)'; // greenish
-  ctx.beginPath(); ctx.arc(sx(start.x), sy(start.y), 4, 0, Math.PI*2); ctx.fill();
-
-  // current point marker
-  const end = path[path.length-1];
-  ctx.fillStyle = 'rgba(245,158,11,0.95)'; // amber
-  ctx.beginPath(); ctx.arc(sx(end.x), sy(end.y), 4, 0, Math.PI*2); ctx.fill();
-
-  // straight-line displacement vector from origin → current
-  ctx.save();
-  ctx.setLineDash([6,6]);
-  ctx.strokeStyle = 'rgba(99,102,241,0.9)'; // indigo
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(sx(0), sy(0));
-  ctx.lineTo(sx(end.x), sy(end.y));
-  ctx.stroke();
-  ctx.restore();
-
-  // label current coordinates near the marker
-  ctx.fillStyle = 'rgba(148,163,184,0.95)';
-  ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(`[${end.x.toFixed(2)}, ${end.y.toFixed(2)}] m`, sx(end.x), sy(end.y) - 12);
-
-  // origin label
-  ctx.fillText('(0,0)', sx(0), sy(0) - 8);
-
-  ctx.restore();
-}
-
-function parseAcc(dataView){
-  const samples = [];
-  if (dataView.byteLength < 10) return samples;
-
-  const accuracy = dataView.getUint8(9);
-  let sampleSize = 6;
-  let offset = 10;
-  if (accuracy === 0x00){ sampleSize = 3; }
-  for (let i = offset; i + sampleSize - 1 < dataView.byteLength; i += sampleSize){
-    let x,y,z;
-    if (sampleSize === 3){
-      x = dataView.getInt8(i) / 1000.0;
-      y = dataView.getInt8(i+1) / 1000.0;
-      z = dataView.getInt8(i+2) / 1000.0;
-    } else {
-      x = dataView.getInt16(i, true) / 1000.0;
-      y = dataView.getInt16(i+2, true) / 1000.0;
-      z = dataView.getInt16(i+4, true) / 1000.0;
-    }
-    const m = Math.sqrt(x*x + y*y + z*z);
-    samples.push({x,y,z,m});
-  }
-  return samples;
-}
-
-function parsePMD(dataView){
-  if (dataView.byteLength < 9) return null;
-  const frametype = dataView.getUint8(0);
-  const timestamp = dataView.getBigUint64(1, true);
-  if (frametype === 0x02 || frametype === 0x00){
-    const accSamples = parseAcc(dataView);
-    if (accSamples.length) return {timestamp, accSamples};
-  }
-  return null;
-}
-
-function keepWindow(){
-  // keep only a small visualization window in memory; the long-run recording is streamed to disk
-  while (accBuffer.length && accBuffer[0].t < accBuffer[accBuffer.length-1].t - VIS_WINDOW_SEC){
-    accBuffer.shift();
-  }
-}
-}
-
-function saveAccelerometerData(){
-  if (!accBuffer || accBuffer.length === 0){
-    alert('No accelerometer data to save');
+// ======== Support check ========
+(function init(){
+  const isSecure = (window.isSecureContext || location.protocol==='https:' || location.hostname==='localhost');
+  if (!('bluetooth' in navigator) || !isSecure){
+    setStatus('Web Bluetooth requires Chrome/Edge in a secure context (HTTPS or http://localhost).');
+    connectBtn.disabled = true; startBtn.disabled = true; stopBtn.disabled = true;
     return;
   }
-  let csvContent = 'timestamp,x,y,z,magnitude\n';
-  accBuffer.forEach(sample => {
-    csvContent += `${sample.t},${sample.x},${sample.y},${sample.z},${sample.m}\n`;
-  });
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `accelerometer_data_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  setStatus(`Saved ${accBuffer.length} accelerometer samples to CSV file`);
-}
-
-function showDebugInfo(){
-  console.log('=== DEBUG INFO ===');
-  console.log('Device connected:', !!device);
-  console.log('Server connected:', !!server);
-  console.log('Data characteristic:', !!dataChar);
-  console.log('Raw data frames received:', rawDataCount);
-  console.log('Accelerometer buffer length:', accBuffer.length);
-  console.log('Motion baselineReady:', baselineReady, 'collecting:', baselineCollecting);
-  console.log('Baseline (g):', baselineAcc);
-  console.log('Velocity (m/s):', vel);
-  console.log('Position (m):', pos);
-  alert(`Debug info logged to console. Check browser console (F12).
-Raw frames: ${rawDataCount}
-ACC samples: ${accBuffer.length}
-Motion baseline: ${baselineReady ? 'ready' : (baselineCollecting ? 'collecting' : 'not set')}`);
-}
-
-async function retryActivation(){
-  if (!device || !server) { alert('Not connected to device'); return; }
-  setStatus('Retrying activation methods…');
-  try {
-    const pmdSvc = await server.getPrimaryService(PMD_SERVICE_UUID);
-    const ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
-    rawDataCount = 0;
-    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
-    await new Promise(r => setTimeout(r, 1000));
-    const altCommand = new Uint8Array([0x02,0x02,0x00,0x01,0xC8,0x00,0x01,0x01,0x10,0x00]);
-    await ctrlChar.writeValueWithoutResponse(altCommand);
-    await new Promise(r => setTimeout(r, 1000));
-    const combined = new Uint8Array([0x02,0x00,0x00,0x01,0x82,0x00,0x01,0x01,0x0E,0x00, 0x02,0x02,0x00,0x01,0xC8,0x00,0x01,0x01,0x10,0x00, 0x02,0x01,0x08,0x00]);
-    await ctrlChar.writeValueWithoutResponse(combined);
-    setStatus('Retry complete. Check console for results…');
-    setTimeout(()=>{ setStatus(rawDataCount>0 ? `Success! Received ${rawDataCount} frames` : 'Retry failed. Try reconnecting.'); }, 3000);
-  } catch (err) {
-    console.error('Retry failed:', err);
-    setStatus('Retry failed: ' + err.message);
-  }
-}
-
-function updateUI(){
-  // Accelerometry
-  if (accBuffer.length > 0){
-    const latest = accBuffer[accBuffer.length - 1];
-    accVal.innerHTML = latest.m.toFixed(2) + ' <small>g</small>';
+  if (!('showSaveFilePicker' in window)){
+    setStatus('Recording to one file needs Chrome/Edge.');
   } else {
-    accVal.innerHTML = '— <small>g</small>';
+    setStatus('Ready. Click Connect to find your Polar H10.');
   }
+})();
 
-  // Motion distance (straight-line from origin to current)
-  if (motionPath.length){
-    const p = motionPath[motionPath.length-1];
-    const dist = Math.hypot(p.x, p.y);
-    motionDistVal.innerHTML = dist.toFixed(2) + ' <small>m</small>';
-    motionPosVal.innerHTML = `<span class="mono">${p.x.toFixed(2)} m</span>, <span class="mono">${p.y.toFixed(2)} m</span>`;
-  } else {
-    motionDistVal.innerHTML = '0.00 <small>m</small>';
-    motionPosVal.innerHTML = '<span class="mono">0.00 m</span>, <span class="mono">0.00 m</span>';
-  }
-
-  // Data count
-  dataCountVal.innerHTML = accBuffer.length + ' <small>samples</small>';
-
-  // Collection time
-  if (startTime) {
-    const elapsed = (Date.now() / 1000) - startTime;
-    const minutes = Math.floor(elapsed / 60);
-    collectionTimeVal.innerHTML = minutes + ' <small>minutes</small>';
-  } else {
-    collectionTimeVal.innerHTML = '0 <small>minutes</small>';
-  }
-
-  // Data rate
-  const currentTime = Date.now() / 1000;
-  if (lastDataTime > 0 && currentTime > lastDataTime) {
-    const timeDiff = currentTime - lastDataTime;
-    const dataDiff = accBuffer.length - lastDataCount;
-    const dataRate = dataDiff / timeDiff;
-    dataRateVal.innerHTML = dataRate.toFixed(1) + ' <small>Hz</small>';
-  } else {
-    dataRateVal.innerHTML = '0.0 <small>Hz</small>';
-  }
-  lastDataCount = accBuffer.length;
-  lastDataTime = currentTime;
-
-  // ACC plots
-  if (accBuffer.length >= 2){
-    const t = accBuffer.map(p => p.t);
-    drawSeries(accxctx, { x:t, y:accBuffer.map(p=>p.x) });
-    drawSeries(accyctx, { x:t, y:accBuffer.map(p=>p.y) });
-    drawSeries(acczctx, { x:t, y:accBuffer.map(p=>p.z) });
-    drawSeries(accmctx, { x:t, y:accBuffer.map(p=>p.m) });
-  } else {
-    drawSeries(accxctx, {x:[], y:[]});
-    drawSeries(accyctx, {x:[], y:[]});
-    drawSeries(acczctx, {x:[], y:[]});
-    drawSeries(accmctx, {x:[], y:[]});
-  }
-
-  // Motion plot
-  drawMotion(motionctx, motionPath);
-}
-
-// ================== BLE Flow ==================
+// ======== BLE flow ========
 async function connect(){
   try{
     setStatus('Requesting device…');
     device = await navigator.bluetooth.requestDevice({
-      filters: [{ name: 'Polar H10' }, { namePrefix: 'Polar' }],
-      optionalServices: [HR_SERVICE_UUID, PMD_SERVICE_UUID],
-      acceptAllDevices: false
+      filters: [{name:'Polar H10'},{namePrefix:'Polar'}],
+      optionalServices:[HR_SERVICE_UUID, PMD_SERVICE_UUID]
     });
-
     device.addEventListener('gattserverdisconnected', onDisconnected);
+
     setStatus('Connecting…');
-
-    const connectPromise = device.gatt.connect();
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000));
-    server = await Promise.race([connectPromise, timeoutPromise]);
-
-    setStatus('Getting services…');
-
-    try {
-      await server.getPrimaryService('0000180a-0000-1000-8000-00805f9b34fb');
-    } catch {}
+    server = await device.gatt.connect();
 
     const pmdSvc = await server.getPrimaryService(PMD_SERVICE_UUID);
-    const ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
-
-    setStatus('Starting accelerometer data stream…');
-
-    try {
-      const hrSvc = await server.getPrimaryService(HR_SERVICE_UUID);
-      const hrChar = await hrSvc.getCharacteristic(HR_MEAS_UUID);
-      try {
-        await hrChar.startNotifications();
-        setTimeout(()=>{ try{ hrChar.stopNotifications(); }catch{} }, 1000);
-      } catch {}
-    } catch {}
-
-    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
-    await new Promise(r => setTimeout(r, 1000));
-    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
-    await new Promise(r => setTimeout(r, 2000));
-
+    ctrlChar = await pmdSvc.getCharacteristic(PMD_CHAR1_UUID);
     dataChar = await pmdSvc.getCharacteristic(PMD_CHAR2_UUID);
+
+    setStatus('Starting accelerometer stream…');
+    await ctrlChar.writeValueWithoutResponse(ACC_WRITE);
+    await new Promise(r=>setTimeout(r,1000));
+    await ctrlChar.writeValueWithoutResponse(ACC_WRITE); // belt + braces
+
     dataChar.addEventListener('characteristicvaluechanged', onPMD);
     await dataChar.startNotifications();
-    await new Promise(r => setTimeout(r, 1000));
 
-    setStatus('Connected. Streaming accelerometer data…');
-    connectBtn.disabled = true;
-    disconnectBtn.disabled = false;
-    retryBtn.disabled = false;
-    resetMotionBtn.disabled = false;
-    startTime = Date.now() / 1000;
+    // (Small HR read tickle improves reliability on some stacks)
+    try{
+      const hrSvc = await server.getPrimaryService(HR_SERVICE_UUID);
+      const hrChar = await hrSvc.getCharacteristic(HR_MEAS_UUID);
+      await hrChar.startNotifications();
+      setTimeout(()=>{ hrChar.stopNotifications().catch(()=>{}); }, 1000);
+    }catch{}
 
-    // Start timers
-    if (updateTimer) clearInterval(updateTimer);
+    connectBtn.disabled = true; disconnectBtn.disabled = false; startBtn.disabled = false;
+    setStatus('Connected. Streaming ACC frames…');
+
+    // UI rate update
     if (uiTimer) clearInterval(uiTimer);
-    updateTimer = setInterval(processStep, 1000);
-    uiTimer = setInterval(updateUI, 100);
+    uiTimer = setInterval(()=>{
+      framesVal.textContent = String(rawFrames);
+      samplesVal.textContent = String(totalSamples);
+    }, 250);
 
-    // Auto-initialize motion baseline once connected
-    resetMotion();
-
-    // Fallback activation attempts if no data
-    setTimeout(async () => {
-      if (rawDataCount === 0) {
-        setStatus('Connected but no data yet. Trying alternative activation…');
-        const alt = new Uint8Array([0x02,0x02,0x00,0x01,0xC8,0x00,0x01,0x01,0x10,0x00]);
-        try { await ctrlChar.writeValueWithoutResponse(alt); } catch {}
-        setTimeout(async ()=>{
-          const combined = new Uint8Array([0x02,0x00,0x00,0x01,0x82,0x00,0x01,0x01,0x0E,0x00, 0x02,0x02,0x00,0x01,0xC8,0x00,0x01,0x01,0x10,0x00, 0x02,0x01,0x08,0x00]);
-          try { await ctrlChar.writeValueWithoutResponse(combined); } catch {}
-        }, 1000);
+    if (rateTimer) clearInterval(rateTimer);
+    rateTimer = setInterval(()=>{
+      const now = performance.now();
+      if (lastTime){
+        const dt = (now - lastTime)/1000;
+        const dN = totalSamples - lastCount;
+        rateVal.textContent = (dN/dt).toFixed(1) + ' Hz';
       }
-    }, 5000);
+      lastTime = now; lastCount = totalSamples;
+    }, 1000);
 
-  } catch(err){
+  }catch(err){
     console.error(err);
-    if (err.name === 'NotFoundError') setStatus('Error: No Polar H10 found. Make sure it\'s nearby and advertising.');
-    else if (err.name === 'SecurityError') setStatus('Error: Bluetooth access denied.');
-    else if (err.message === 'Connection timeout') setStatus('Error: Connection timeout.');
-    else setStatus('Error: ' + err.message);
-    throw err; // allow retry wrapper to handle
+    setStatus('Connect error: ' + (err && err.message ? err.message : err));
   }
 }
 
 function onDisconnected(){
   setStatus('Disconnected');
-  connectBtn.disabled = false;
-  disconnectBtn.disabled = true;
-  retryBtn.disabled = true;
-  resetMotionBtn.disabled = true;
-  if (dataChar){ try{ dataChar.stopNotifications(); } catch(e){} }
-  if (updateTimer) clearInterval(updateTimer);
+  connectBtn.disabled = false; disconnectBtn.disabled = true; startBtn.disabled = true; stopBtn.disabled = true;
+  try{ dataChar && dataChar.stopNotifications(); }catch{}
   if (uiTimer) clearInterval(uiTimer);
+  if (rateTimer) clearInterval(rateTimer);
 }
 
 async function disconnect(){
   try{
-    if (!device) return;
-    if (dataChar){ try{ await dataChar.stopNotifications(); } catch(e){} }
-    if (device.gatt.connected) device.gatt.disconnect();
-  } catch(err){ console.error(err); }
+    if (dataChar){ try{ await dataChar.stopNotifications(); }catch{} }
+    if (device && device.gatt.connected) device.gatt.disconnect();
+  }catch(e){ console.warn(e); }
+}
+
+// ======== PMD parsing ========
+function parseAcc(dataView){
+  const samples=[];
+  if (dataView.byteLength < 10) return samples;
+  const accuracy = dataView.getUint8(9);
+  let sampleSize = (accuracy===0x00) ? 3 : 6; // 8-bit or 16-bit
+  let offset = 10;
+  for (let i=offset; i+sampleSize<=dataView.byteLength; i+=sampleSize){
+    let x,y,z;
+    if (sampleSize===3){ x=dataView.getInt8(i)/1000; y=dataView.getInt8(i+1)/1000; z=dataView.getInt8(i+2)/1000; }
+    else { x=dataView.getInt16(i,true)/1000; y=dataView.getInt16(i+2,true)/1000; z=dataView.getInt16(i+4,true)/1000; }
+    const m=Math.sqrt(x*x+y*y+z*z);
+    samples.push({x,y,z,m});
+  }
+  return samples;
+}
+
+function parsePMD(dv){
+  if (dv.byteLength < 9) return null;
+  const frameType = dv.getUint8(0);
+  const timestamp = dv.getBigUint64(1,true); // ns
+  if (frameType===0x02 || frameType===0x00){
+    const accSamples = parseAcc(dv);
+    if (accSamples.length) return {timestamp, accSamples};
+  }
+  return null;
 }
 
 function onPMD(event){
-  try {
-    const dv = event.target.value;
-    rawDataCount++;
-    const data = parsePMD(dv);
-    if (!data) return;
+  const dv = event.target.value;
+  rawFrames++;
+  const parsed = parsePMD(dv);
+  if (!parsed) return;
+  const tNow = Number(parsed.timestamp)/1e9; // seconds
+  const n = parsed.accSamples.length;
+  totalSamples += n;
 
-    const tNow = Number(data.timestamp) / 1e9;
-    const n = data.accSamples.length;
-
-    for (let i = 0; i < n; i++){
-      const s = data.accSamples[i];
-      const t = tNow - (n - i - 1) / TARGET_FS; // spread samples evenly at 200 Hz
-      // store for ACC plots/CSV window
-      accBuffer.push({ t, x:s.x, y:s.y, z:s.z, m:s.m });
-      // long-run recording (stream to disk)
-      if (recording){
-        recBuffer += `${t},${s.x},${s.y},${s.z},${s.m}
-`;
-        recordedSamples++;
-      }
-      // update motion live
-      processMotionSample(s, t);
+  if (recording){
+    // pre-size check: if buffer too large, flush early
+    if (recBuffer.length > 900_000) flushRecording(true);
+    for (let i=0;i<n;i++){
+      const s = parsed.accSamples[i];
+      const t = tNow - (n - i - 1)/200; // spread at 200 Hz
+      recBuffer += `${t},${s.x},${s.y},${s.z},${s.m}\n`;
     }
-    // periodic flush
     flushRecording();
-  } catch (err) {
-    console.error('onPMD processing error:', err);
-    setStatus('Data processing error (see console).');
   }
 }
 
-function processStep(){
-  keepWindow();
+// ======== Recording helpers (single file) ========
+async function acquireWakeLock(){
+  try{ if ('wakeLock' in navigator){ wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', ()=>console.log('WakeLock released')); }}catch(e){ console.warn('wakeLock failed', e); }
 }
 
-// Surface any global errors so they don't silently break setup
-window.addEventListener('error', (e)=>{
-  console.error('Global script error:', e.error || e.message);
-  setStatus('Script error: check console.');
+async function openWriter(){
+  // createWritable with keepExistingData, then seek to EOF
+  recWriter = await recHandle.createWritable({ keepExistingData:true });
+  const f = await recHandle.getFile();
+  await recWriter.seek(f.size);
+}
+
+async function startRecording(){
+  if (recording) return;
+  if (!server || !dataChar){ alert('Connect to the H10 first.'); return; }
+  if (!('showSaveFilePicker' in window)){ alert('Use Chrome/Edge over HTTPS (or http://localhost) for single-file recording.'); return; }
+  try{
+    recFlushEveryMs = Math.max(1, Number(flushInput.value||1))*1000;
+    recHandle = await window.showSaveFilePicker({
+      suggestedName: `polar_h10_acc_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`,
+      types:[{description:'CSV', accept:{'text/csv':['.csv']}}]
+    });
+    await openWriter();
+
+    // If this is a brand-new file (size 0), write header
+    const existing = await recHandle.getFile();
+    if (existing.size === 0){ await recWriter.write('timestamp,x,y,z,magnitude\n'); }
+
+    await acquireWakeLock();
+    recording = true;
+    startBtn.disabled = true; stopBtn.disabled = false; setRec(true);
+    lastFlush = performance.now();
+    setStatus('Recording… writing CSV batches to a single file');
+
+    // periodic commit: every 10 min ensure bytes are on disk
+    reopenTimer = setInterval(commitAndReopen, 10*60*1000);
+  }catch(err){
+    console.error('startRecording', err);
+    setStatus('Recording not started: ' + err.message);
+  }
+}
+
+async function flushRecording(force=false){
+  const now = performance.now();
+  if (!recording || !recWriter) return;
+  if (!force && (now - lastFlush < recFlushEveryMs) && recBuffer.length < 1_000_000) return;
+  lastFlush = now;
+  if (recBuffer.length){ await recWriter.write(recBuffer); recBuffer=''; }
+}
+
+async function commitAndReopen(){
+  try{
+    await flushRecording(true);
+    if (recWriter){ await recWriter.close(); }
+    await openWriter();
+  }catch(e){ console.error('commit cycle', e); }
+}
+
+async function stopRecording(){
+  if (!recording) return;
+  try{
+    clearInterval(reopenTimer); reopenTimer=null;
+    await flushRecording(true);
+    if (recWriter){ await recWriter.close(); recWriter=null; }
+    if (wakeLock){ try{ await wakeLock.release(); }catch{} wakeLock=null; }
+    recording=false; setRec(false);
+    startBtn.disabled = false; stopBtn.disabled = true;
+    setStatus('Recording stopped. File closed.');
+  }catch(err){
+    console.error('stopRecording', err);
+    setStatus('Error stopping recording: ' + err.message);
+  }
+}
+
+// Warn on tab close while recording
+window.addEventListener('beforeunload', (e)=>{
+  if (recording){ e.preventDefault(); e.returnValue=''; }
 });
 
-// ================== Events ==================
-connectBtn.addEventListener('click', connectWithRetry);
+// ======== Wire up ========
+connectBtn.addEventListener('click', connect);
 disconnectBtn.addEventListener('click', disconnect);
-saveAccBtn.addEventListener('click', saveAccelerometerData);
-startRecBtn.addEventListener('click', startRecording);
-stopRecBtn.addEventListener('click', stopRecording);
-debugBtn.addEventListener('click', showDebugInfo);
-retryBtn.addEventListener('click', retryActivation);
-resetMotionBtn.addEventListener('click', resetMotion);
+startBtn.addEventListener('click', startRecording);
+stopBtn.addEventListener('click', stopRecording);
 
-// Feature detection and macOS guidance
-if (!('bluetooth' in navigator)){
-  setStatus('Web Bluetooth not available in this browser. Try Chrome or Edge.');
-  connectBtn.disabled = true;
-} else {
-  const isMac = navigator.platform.toUpperCase().includes('MAC');
-  setStatus(isMac ? 'Ready. On macOS, ensure Bluetooth is enabled and H10 is paired.' : 'Ready. Make sure Bluetooth is enabled and H10 is nearby.');
-}
-
-// Connection retry wrapper
-let connectionRetries = 0;
-const maxRetries = 3;
-async function connectWithRetry() {
-  try {
-    await connect();
-    connectionRetries = 0;
-  } catch (err) {
-    connectionRetries++;
-    if (connectionRetries < maxRetries) {
-      setStatus(`Connection failed. Retrying… (${connectionRetries}/${maxRetries})`);
-      setTimeout(connectWithRetry, 2000);
-    } else {
-      setStatus('Connection failed after multiple attempts. Please check device and try again.');
-      connectionRetries = 0;
-    }
-  }
-}
 </script>
 </body>
 </html>
