@@ -312,6 +312,47 @@ function processMotionSample(sample, t){
 
   // Trapezoidal integration for velocity
   let vxNew = vel.x + 0.5 * (prevAcc.x + ax) * dt;
+  let vyNew = vel.y + 0.5 * (prevAcc.y + ay) * dt;
+  let vzNew = vel.z + 0.5 * (prevAcc.z + az) * dt;
+
+  // Damping
+  vxNew *= VEL_DAMP_PER_SAMPLE;
+  vyNew *= VEL_DAMP_PER_SAMPLE;
+  vzNew *= VEL_DAMP_PER_SAMPLE;
+
+  // If stationary for a short window, snap velocity to zero
+  if (zuptCounter >= ZUPT_SAMPLES){
+    vxNew = 0; vyNew = 0; vzNew = 0;
+    // Slowly adapt baseline towards current reading (tracks tiny tilt changes)
+    baselineAcc.x = (1 - BASELINE_ALPHA) * baselineAcc.x + BASELINE_ALPHA * sample.x;
+    baselineAcc.y = (1 - BASELINE_ALPHA) * baselineAcc.y + BASELINE_ALPHA * sample.y;
+    baselineAcc.z = (1 - BASELINE_ALPHA) * baselineAcc.z + BASELINE_ALPHA * sample.z;
+  }
+
+  // Snap tiny velocities to zero
+  if (Math.abs(vxNew) < VEL_EPS) vxNew = 0;
+  if (Math.abs(vyNew) < VEL_EPS) vyNew = 0;
+  if (Math.abs(vzNew) < VEL_EPS) vzNew = 0;
+
+  // Trapezoidal integration for position
+  pos.x += 0.5 * (vel.x + vxNew) * dt;
+  pos.y += 0.5 * (vel.y + vyNew) * dt;
+  pos.z += 0.5 * (vel.z + vzNew) * dt;
+
+  // If we're stationary and very close to origin, snap back to exact (0,0)
+  if (zuptCounter >= ZUPT_SAMPLES) {
+    const dist0 = Math.hypot(pos.x, pos.y);
+    if (dist0 <= ORIGIN_SNAP_RADIUS) { pos.x = 0; pos.y = 0; }
+  }
+
+  // Commit state for next step
+  vel.x = vxNew; vel.y = vyNew; vel.z = vzNew;
+  prevAcc.x = ax; prevAcc.y = ay; prevAcc.z = az;
+
+  motionPath.push({x: pos.x, y: pos.y});
+  if (motionPath.length > MOTION_MAX_POINTS) motionPath.shift();
+}
+
 function drawSeries(ctx, data, opts={}){
   const w = ctx.canvas.width, h = ctx.canvas.height;
   ctx.clearRect(0,0,w,h);
@@ -737,27 +778,38 @@ async function disconnect(){
 }
 
 function onPMD(event){
-  const dv = event.target.value;
-  rawDataCount++;
-  const data = parsePMD(dv);
-  if (!data) return;
+  try {
+    const dv = event.target.value;
+    rawDataCount++;
+    const data = parsePMD(dv);
+    if (!data) return;
 
-  const tNow = Number(data.timestamp) / 1e9;
-  const n = data.accSamples.length;
+    const tNow = Number(data.timestamp) / 1e9;
+    const n = data.accSamples.length;
 
-  for (let i = 0; i < n; i++){
-    const s = data.accSamples[i];
-    const t = tNow - (n - i - 1) / TARGET_FS; // spread samples evenly at 200 Hz
-    // store for ACC plots/CSV
-    accBuffer.push({ t, x:s.x, y:s.y, z:s.z, m:s.m });
-    // update motion live
-    processMotionSample(s, t);
+    for (let i = 0; i < n; i++){
+      const s = data.accSamples[i];
+      const t = tNow - (n - i - 1) / TARGET_FS; // spread samples evenly at 200 Hz
+      // store for ACC plots/CSV
+      accBuffer.push({ t, x:s.x, y:s.y, z:s.z, m:s.m });
+      // update motion live
+      processMotionSample(s, t);
+    }
+  } catch (err) {
+    console.error('onPMD processing error:', err);
+    setStatus('Data processing error (see console).');
   }
 }
 
 function processStep(){
   keepWindow();
 }
+
+// Surface any global errors so they don't silently break setup
+window.addEventListener('error', (e)=>{
+  console.error('Global script error:', e.error || e.message);
+  setStatus('Script error: check console.');
+});
 
 // ================== Events ==================
 connectBtn.addEventListener('click', connectWithRetry);
