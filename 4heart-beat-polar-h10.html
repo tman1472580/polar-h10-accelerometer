@@ -197,10 +197,20 @@ const ZUPT_SAMPLES = 30;       // consecutive near-zero samples to declare stati
 const BASELINE_ALPHA = 0.02;   // EMA rate to adapt baseline when stationary
 const VEL_EPS = 0.008;         // m/s; snap tiny velocities to zero
 const ORIGIN_SNAP_RADIUS = 0.08; // m; if stationary and close to origin, snap back to (0,0)
+const GRAV_TAU = 0.8;          // s; LPF time constant for gravity/tilt estimate // m; if stationary and close to origin, snap back to (0,0)
             // m/s; snap tiny velocities to zero
 
 let prevAcc = {x:0, y:0, z:0};
 let zuptCounter = 0;
+let gEst = {x:0, y:0, z:1}; // in g; low-pass gravity/tilt estimate
+
+function softDeadband(a){
+  const s = Math.sign(a);
+  const aa = Math.abs(a);
+  if (aa < DB_LO) return 0;
+  // subtract the low threshold so small motions still register (reduced)
+  return s * (aa - DB_LO);
+}
 
 function softDeadband(a){
   const s = Math.sign(a);
@@ -268,6 +278,8 @@ function addToBaseline(sampleG){
       y: sum.y / baselineSamples.length,
       z: sum.z / baselineSamples.length
     };
+    // initialize gravity estimate to baseline
+    gEst = {x: baselineAcc.x, y: baselineAcc.y, z: baselineAcc.z};
     baselineCollecting = false;
     baselineReady = true;
     setStatus('Baseline captured. Tracking motion from (0,0).');
@@ -276,26 +288,25 @@ function addToBaseline(sampleG){
 
 function processMotionSample(sample, t){
   // sample: {x,y,z,m} in g ; t in seconds
-  if (baselineCollecting){
-    addToBaseline(sample);
-    return;
-  }
+  if (baselineCollecting){ addToBaseline(sample); return; }
   if (!baselineReady) return; // wait for reset to calibrate
 
-  if (lastSampleTime == null){
-    lastSampleTime = t;
-    return;
-  }
+  if (lastSampleTime == null){ lastSampleTime = t; return; }
   let dt = t - lastSampleTime;
-  if (dt <= 0 || dt > 0.2){ // outliers / gaps
-    dt = 1 / TARGET_FS;
-  }
+  if (dt <= 0 || dt > 0.2){ dt = 1 / TARGET_FS; }
   lastSampleTime = t;
 
-  // subtract baseline (g), convert to m/s^2
-  let ax = (sample.x - baselineAcc.x) * G;
-  let ay = (sample.y - baselineAcc.y) * G;
-  let az = (sample.z - baselineAcc.z) * G;
+  // --- Tilt compensation via gravity LPF ---
+  // Update gravity estimate with a first-order low-pass filter
+  const alpha = Math.exp(-dt / GRAV_TAU);
+  gEst.x = alpha * gEst.x + (1 - alpha) * sample.x;
+  gEst.y = alpha * gEst.y + (1 - alpha) * sample.y;
+  gEst.z = alpha * gEst.z + (1 - alpha) * sample.z;
+
+  // Linear acceleration (gravity removed), convert to m/s^2
+  let ax = (sample.x - gEst.x) * G;
+  let ay = (sample.y - gEst.y) * G;
+  let az = (sample.z - gEst.z) * G;
 
   // soft deadband so small movements still register but with reduced magnitude
   const moving = (Math.abs(ax) > DB_HI) || (Math.abs(ay) > DB_HI) || (Math.abs(az) > DB_HI);
@@ -304,11 +315,7 @@ function processMotionSample(sample, t){
   az = softDeadband(az);
 
   // Zero-velocity detection window (post-deadband)
-  if (ax === 0 && ay === 0 && az === 0) {
-    zuptCounter++;
-  } else {
-    zuptCounter = 0;
-  }
+  if (ax === 0 && ay === 0 && az === 0) { zuptCounter++; } else { zuptCounter = 0; }
 
   // Trapezoidal integration for velocity
   let vxNew = vel.x + 0.5 * (prevAcc.x + ax) * dt;
@@ -316,17 +323,16 @@ function processMotionSample(sample, t){
   let vzNew = vel.z + 0.5 * (prevAcc.z + az) * dt;
 
   // Damping
-  vxNew *= VEL_DAMP_PER_SAMPLE;
-  vyNew *= VEL_DAMP_PER_SAMPLE;
-  vzNew *= VEL_DAMP_PER_SAMPLE;
+  vxNew *= VEL_DAMP_PER_SAMPLE; vyNew *= VEL_DAMP_PER_SAMPLE; vzNew *= VEL_DAMP_PER_SAMPLE;
 
-  // If stationary for a short window, snap velocity to zero
+  // If stationary briefly, zero velocity and gently align baseline
   if (zuptCounter >= ZUPT_SAMPLES){
     vxNew = 0; vyNew = 0; vzNew = 0;
-    // Slowly adapt baseline towards current reading (tracks tiny tilt changes)
-    baselineAcc.x = (1 - BASELINE_ALPHA) * baselineAcc.x + BASELINE_ALPHA * sample.x;
-    baselineAcc.y = (1 - BASELINE_ALPHA) * baselineAcc.y + BASELINE_ALPHA * sample.y;
-    baselineAcc.z = (1 - BASELINE_ALPHA) * baselineAcc.z + BASELINE_ALPHA * sample.z;
+    // Nudge gravity estimate towards current sample even more when still
+    const a2 = 0.1; // faster adaptation when stationary
+    gEst.x = (1 - a2) * gEst.x + a2 * sample.x;
+    gEst.y = (1 - a2) * gEst.y + a2 * sample.y;
+    gEst.z = (1 - a2) * gEst.z + a2 * sample.z;
   }
 
   // Snap tiny velocities to zero
